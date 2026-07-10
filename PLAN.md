@@ -165,6 +165,7 @@ CREATE TABLE events (
   fingerprint   TEXT NOT NULL,                -- canonical dedup hash (hex)
   correlation_id TEXT,                        -- request/trace id (user-supplied grouping)
   parent_event_id TEXT,                       -- caused-by parent (FK-ish, soft)
+  resolved_at   TEXT,                         -- RFC3339 UTC; NULL = unresolved
 
   context       TEXT,                         -- JSON object (structured context)
   tags          TEXT,                         -- JSON array of strings
@@ -200,7 +201,12 @@ CREATE INDEX ix_events_corr          ON events(correlation_id) WHERE correlation
 CREATE INDEX ix_events_parent        ON events(parent_event_id) WHERE parent_event_id IS NOT NULL;
 CREATE INDEX ix_events_code_ts       ON events(error_code, ts_epoch_ms DESC) WHERE error_code IS NOT NULL;
 CREATE INDEX ix_events_reqid         ON events(ctx_request_id) WHERE ctx_request_id IS NOT NULL;
+CREATE INDEX ix_events_unresolved    ON events(ts_epoch_ms DESC) WHERE resolved_at IS NULL; -- unresolved backlog
 ```
+
+`resolved_at IS NULL` is a first-class query axis (unresolved backlog); setting it is a
+plain `UPDATE`, not part of `EventBuilder` construction — events are always logged
+unresolved and resolved later by id.
 
 FTS5 shadow + sync triggers (see §4):
 
@@ -349,8 +355,11 @@ text size) — acceptable, controllable via which columns are indexed.
 
 Transport: JSON-RPC 2.0 over **stdio** (default; how `witslog serve-mcp` runs) and
 optional **HTTP/SSE**. Implements MCP `tools/list`, `tools/call`. Provider-independent —
-raw protocol, JSON Schema per tool. All tools read-only except none (logging is not an MCP
-tool by default; can be enabled behind a flag `--allow-write`).
+raw protocol, JSON Schema per tool. All tools read-only except `witslog_delete`, the sole
+write-capable tool (logging itself is still not an MCP tool by default). `witslog_delete`
+is gated behind `--allow-write` and only deletes events with `resolved_at IS NOT NULL`
+(or explicit `force:true`), so the AI assistant can clean up stale/resolved errors
+without risk of deleting live ones.
 
 Global conventions:
 - **Pagination:** keyset via opaque `cursor` (base64 of `{ts_epoch_ms,id}`), plus `limit`
@@ -379,6 +388,7 @@ Tools:
 | **top_failures** | ranked recurring failures | filters, `from/to`, `by`(count\|recency\|severity), `limit` | `{items:[{fingerprint,title,count,last_seen,category,sample_event_id}]}` | `fingerprints` ordered by chosen metric | materialized table = O(limit) |
 | **list_traces** *(corr)* | events for a correlation/request id or caused-by chain | `correlation_id`\|`root_event_id` | `{ordered_events[], edges[]}` | `ix_events_corr` / recursive edge walk | bounded by trace size |
 | **search_all** *(federation, opt-in)* | search across multiple attached project DBs | `query`, filters, `projects[]?` | `{items[] (+source_db), by_project[]}` | ATTACH each project DB read-only + `UNION ALL` over per-DB FTS queries | only enabled with `--attach`; caps # DBs |
+| **witslog_delete** *(write)* | delete stale/resolved error(s) | `event_id`\|`fingerprint`\|`filter{resolved_before,...}`, `dry_run?`, `force?` | `{deleted_count, deleted_ids[]}` | `DELETE FROM events WHERE resolved_at IS NOT NULL AND ...` (+ cascade `error_edges` by src/dst) | gated behind `--allow-write`; requires `resolved_at IS NOT NULL` unless `force:true`; `dry_run` defaults true (preview only) |
 
 Per-tool error handling: validate against JSON Schema first (reject -32602); enforce
 window sanity (`from<=to`); clamp `limit`; wrap DB errors as -32000 with generic message +
@@ -440,7 +450,7 @@ witslog/
 │  ├─ witslog-config/              # #8 config manager (layered resolve)
 │  ├─ witslog-plugin/              # extensibility traits + dynamic load
 │  ├─ witslog-cli/                 # #6 CLI (clap) — builds `witslog` binary
-│  └─ witslog-ffi/                 # C ABI: witslog_log(json)->int etc. for embedding
+│  └─ witslog-ffi/                 # C ABI: witslog_log/witslog_resolve/witslog_delete for embedding
 ├─ bindings/                       # thin wrappers: python/ node/ go/ ruby/ (call ffi)
 ├─ install/                        # #9 scripts, packaging manifests
 ├─ tests/                          # integration, migration, load
@@ -531,9 +541,13 @@ binary supports schema ≤ its max and ≥ a min; refuse out-of-range with clear
 
 **M2 — Logging library + client API + FFI**
 - Objectives: fluent builder, `error/warn/info/exception`, enrichers, redaction,
-  fingerprint + deterministic `event_id`, buffering, C ABI. Deps: M1. Complexity: **M**.
+  fingerprint + deterministic `event_id`, buffering, C ABI, `resolved_at` lifecycle
+  (`mark_resolved`) and deletion API (`delete_resolved`/`witslog_delete`) for
+  stale-error cleanup by CLI/FFI/MCP. Deps: M1. Complexity: **M**.
 - Accept: host program (Rust + one FFI language) logs structured event; PII redacted;
-  identical errors share fingerprint; overhead <100µs buffered (bench in M7).
+  identical errors share fingerprint; overhead <100µs buffered (bench in M7); an event
+  can be marked resolved and then deleted via `witslog_delete`/CLI, unresolved events
+  are protected without `force:true`.
 
 **M3 — Taxonomy engine**
 - Objectives: builtin hierarchy (infra/app/runtime/external), aliases, tag rules,

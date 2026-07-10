@@ -117,7 +117,7 @@ impl<'a> EventWriter<'a> {
             "SELECT event_id, ts, application, version, environment, command, subsystem,
                     hostname, severity, category, error_code, message, exception,
                     stacktrace, stack_norm, root_cause, fingerprint, correlation_id,
-                    parent_event_id, context, tags, metadata
+                    parent_event_id, context, tags, metadata, resolved_at
              FROM events WHERE event_id = ?1",
             [event_id],
             |row| {
@@ -149,6 +149,7 @@ impl<'a> EventWriter<'a> {
                     row.get::<_, Option<String>>(19)?,
                     row.get::<_, Option<String>>(20)?,
                     row.get::<_, Option<String>>(21)?,
+                    row.get::<_, Option<String>>(22)?,
                 ))
             },
         );
@@ -177,6 +178,7 @@ impl<'a> EventWriter<'a> {
                 context_json,
                 tags_json,
                 metadata_json,
+                resolved_at_str,
             )) => {
                 let severity = match severity_str.as_str() {
                     "trace" => witslog_core::Severity::Trace,
@@ -192,6 +194,11 @@ impl<'a> EventWriter<'a> {
                 let context = context_json.and_then(|j| serde_json::from_str(&j).ok());
                 let tags = tags_json.and_then(|j| serde_json::from_str(&j).ok());
                 let metadata = metadata_json.and_then(|j| serde_json::from_str(&j).ok());
+                let resolved_at = resolved_at_str.and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                });
 
                 Ok(Some(Event {
                     event_id,
@@ -213,6 +220,7 @@ impl<'a> EventWriter<'a> {
                     fingerprint,
                     correlation_id,
                     parent_event_id,
+                    resolved_at,
                     context,
                     tags,
                     metadata,
@@ -223,4 +231,77 @@ impl<'a> EventWriter<'a> {
             Err(e) => Err(e.into()),
         }
     }
+
+    pub fn mark_resolved(&self, event_id: &str) -> Result<()> {
+        let conn = self.conn.conn();
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+
+        conn.execute(
+            "UPDATE events SET resolved_at = ?1 WHERE event_id = ?2",
+            rusqlite::params![now, event_id],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn delete_resolved(&self, filter: &DeleteFilter) -> Result<Vec<String>> {
+        let conn = self.conn.conn();
+
+        let mut clauses: Vec<String> = vec!["resolved_at IS NOT NULL".to_string()];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if filter.force {
+            clauses[0] = "1=1".to_string();
+        }
+
+        if let Some(event_id) = &filter.event_id {
+            clauses.push(format!("event_id = ?{}", params.len() + 1));
+            params.push(Box::new(event_id.clone()));
+        }
+
+        if let Some(fingerprint) = &filter.fingerprint {
+            clauses.push(format!("fingerprint = ?{}", params.len() + 1));
+            params.push(Box::new(fingerprint.clone()));
+        }
+
+        if let Some(resolved_before) = &filter.resolved_before {
+            clauses.push(format!("resolved_at <= ?{}", params.len() + 1));
+            params.push(Box::new(resolved_before.clone()));
+        }
+
+        let sql = format!(
+            "SELECT event_id FROM events WHERE {}",
+            clauses.join(" AND ")
+        );
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let ids: Vec<String> = {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(param_refs.as_slice(), |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()?
+        };
+
+        if ids.is_empty() {
+            return Ok(ids);
+        }
+
+        for id in &ids {
+            conn.execute("DELETE FROM events WHERE event_id = ?1", [id])?;
+            conn.execute(
+                "DELETE FROM error_edges WHERE src_event_id = ?1 OR dst_event_id = ?1",
+                [id],
+            )?;
+        }
+
+        Ok(ids)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DeleteFilter {
+    pub event_id: Option<String>,
+    pub fingerprint: Option<String>,
+    pub resolved_before: Option<String>,
+    pub force: bool,
 }

@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use witslog_config::Config;
 use witslog_core::{EventBuilder, Severity};
-use witslog_store::Store;
+use witslog_store::{DeleteFilter, Store};
 
 #[derive(Parser)]
 #[command(name = "witslog")]
@@ -36,6 +36,21 @@ enum Commands {
     Query {
         event_id: String,
     },
+    Resolve {
+        event_id: String,
+    },
+    Delete {
+        #[arg(long)]
+        event_id: Option<String>,
+        #[arg(long)]
+        fingerprint: Option<String>,
+        #[arg(long)]
+        resolved_before: Option<String>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
     Doctor,
 }
 
@@ -62,6 +77,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Query { event_id } => {
             query_event(&cli.db, &event_id)?;
+        }
+        Commands::Resolve { event_id } => {
+            resolve_event(&cli.db, &event_id)?;
+        }
+        Commands::Delete {
+            event_id,
+            fingerprint,
+            resolved_before,
+            force,
+            dry_run,
+        } => {
+            delete_events(&cli.db, event_id, fingerprint, resolved_before, force, dry_run)?;
         }
         Commands::Doctor => {
             doctor()?;
@@ -173,10 +200,71 @@ fn query_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<
             if let Some(cat) = &event.category {
                 println!("  category: {}", cat);
             }
+            match &event.resolved_at {
+                Some(r) => println!("  resolved_at: {}", r),
+                None => println!("  resolved_at: (unresolved)"),
+            }
         }
         None => {
             println!("Event not found: {}", event_id);
         }
+    }
+
+    Ok(())
+}
+
+fn resolve_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let writer = witslog_store::EventWriter::new(store.conn());
+    writer.mark_resolved(event_id)?;
+
+    println!("✓ Event resolved");
+    println!("  event_id: {}", event_id);
+
+    Ok(())
+}
+
+fn delete_events(
+    db_override: &Option<PathBuf>,
+    event_id: Option<String>,
+    fingerprint: Option<String>,
+    resolved_before: Option<String>,
+    force: bool,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let writer = witslog_store::EventWriter::new(store.conn());
+
+    let filter = DeleteFilter {
+        event_id,
+        fingerprint,
+        resolved_before,
+        force,
+    };
+
+    if dry_run {
+        println!("(dry run — no rows deleted; re-run without --dry-run to apply)");
+        // dry_run preview reuses the same filter but never mutates: delete_resolved
+        // itself performs the delete, so a true dry-run just prints the intended filter.
+        println!("  filter: {:?}", filter);
+        return Ok(());
+    }
+
+    let deleted_ids = writer.delete_resolved(&filter)?;
+
+    println!("✓ Deleted {} event(s)", deleted_ids.len());
+    for id in &deleted_ids {
+        println!("  {}", id);
     }
 
     Ok(())

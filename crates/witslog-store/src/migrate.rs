@@ -31,9 +31,14 @@ impl<'a> Migrator<'a> {
             .parse()
             .unwrap_or(0);
 
-        if current_version == 0 {
+        if current_version < 1 {
             self.migrate_0001_init()?;
             self.record_migration(1, "init")?;
+        }
+
+        if current_version < 2 {
+            self.migrate_0002_resolved_at()?;
+            self.record_migration(2, "resolved_at")?;
         }
 
         Ok(())
@@ -149,12 +154,30 @@ impl<'a> Migrator<'a> {
         Ok(())
     }
 
+    fn migrate_0002_resolved_at(&self) -> Result<()> {
+        let has_column: bool = self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'resolved_at'")?
+            .exists([])?;
+
+        if !has_column {
+            self.conn
+                .execute_batch("ALTER TABLE events ADD COLUMN resolved_at TEXT;")?;
+        }
+
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS ix_events_unresolved ON events(ts_epoch_ms DESC) WHERE resolved_at IS NULL;",
+        )?;
+
+        Ok(())
+    }
+
     fn record_migration(&self, version: i32, name: &str) -> Result<()> {
         let checksum = format!("init-{}", version);
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
         self.conn.execute(
-            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('schema_version', ?1)",
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?1)",
             rusqlite::params![version.to_string()],
         )?;
 
