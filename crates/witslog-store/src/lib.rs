@@ -1,11 +1,13 @@
 pub mod conn;
 pub mod error;
 pub mod migrate;
+pub mod sink;
 pub mod writer;
 
 pub use conn::DbConnection;
 pub use error::{Result, StoreError};
 pub use migrate::Migrator;
+pub use sink::StoreSink;
 pub use writer::{DeleteFilter, EventWriter};
 
 use std::path::{Path, PathBuf};

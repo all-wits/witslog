@@ -16,3 +16,4 @@ tracing.workspace = true
 witslog-core = { path = "../witslog-core" }
 
 [dev-dependencies]
+tempfile.workspace = true

@@ -13,101 +13,30 @@ impl<'a> EventWriter<'a> {
 
     pub fn write(&self, event: &Event) -> Result<i64> {
         let conn = self.conn.conn();
-
-        let ts_epoch_ms = event.timestamp.timestamp_millis();
-
-        let severity_rank = event.severity.rank();
-
-        let context_json = event
-            .context
-            .as_ref()
-            .map(|c| c.to_string())
-            .or_else(|| Some("{}".to_string()));
-
-        let tags_json = event
-            .tags
-            .as_ref()
-            .map(|t| serde_json::to_string(t).unwrap_or_default());
-
-        let metadata_json = event
-            .metadata
-            .as_ref()
-            .map(|m| m.to_string());
-
-        conn.execute(
-            "INSERT INTO events (
-                event_id, ts, ts_epoch_ms, application, version, environment,
-                command, subsystem, hostname, severity, severity_rank, category,
-                error_code, message, exception, stacktrace, stack_norm, root_cause,
-                fingerprint, correlation_id, parent_event_id, context, tags,
-                metadata, ingest_source, schema_v
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
-            )",
-            rusqlite::params![
-                event.event_id,
-                event.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-                ts_epoch_ms,
-                event.application,
-                event.version,
-                event.environment,
-                event.command,
-                event.subsystem,
-                event.hostname,
-                event.severity.as_str(),
-                severity_rank,
-                event.category,
-                event.error_code,
-                event.message,
-                event.exception,
-                event.stacktrace,
-                event.stack_norm,
-                event.root_cause,
-                event.fingerprint,
-                event.correlation_id,
-                event.parent_event_id,
-                context_json,
-                tags_json,
-                metadata_json,
-                "lib",
-                1,
-            ],
-        )?;
-
-        let row_id = conn.last_insert_rowid();
-
-        self.update_fingerprint(&conn, &event.fingerprint, &event.event_id, &event.message, &event.category)?;
-
-        Ok(row_id)
+        write_event(&conn, event)
     }
 
-    fn update_fingerprint(
-        &self,
-        conn: &rusqlite::Connection,
-        fingerprint: &str,
-        event_id: &str,
-        message: &str,
-        category: &Option<String>,
-    ) -> Result<()> {
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-
+    /// Best-effort bump of the lifetime dropped-events counter (mirrored from an
+    /// in-process atomic — see `witslog-core::buffer`). Never surfaces failure to
+    /// the caller beyond the `Result`; callers on the FFI/buffer hot path should
+    /// swallow errors from this too.
+    pub fn bump_dropped(&self, n: u64) -> Result<()> {
+        let conn = self.conn.conn();
         conn.execute(
-            "INSERT INTO fingerprints (fingerprint, first_seen, last_seen, sample_event_id, category, title)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(fingerprint) DO UPDATE SET
-                last_seen = ?3, count = count + 1",
-            rusqlite::params![
-                fingerprint,
-                now,
-                now,
-                event_id,
-                category,
-                message,
-            ],
+            "UPDATE runtime_stats SET value = value + ?1 WHERE key = 'dropped_events'",
+            rusqlite::params![n as i64],
         )?;
-
         Ok(())
+    }
+
+    pub fn dropped_count(&self) -> Result<u64> {
+        let conn = self.conn.conn();
+        let value: i64 = conn.query_row(
+            "SELECT value FROM runtime_stats WHERE key = 'dropped_events'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(value.max(0) as u64)
     }
 
     pub fn query_by_id(&self, event_id: &str) -> Result<Option<Event>> {
@@ -296,6 +225,100 @@ impl<'a> EventWriter<'a> {
 
         Ok(ids)
     }
+}
+
+/// Inserts one event and rolls it into the `fingerprints` table. Shared by
+/// `EventWriter::write` (single-write path) and `StoreSink::write_batch`
+/// (buffered/transactional batch path) so both go through identical SQL.
+pub(crate) fn write_event(conn: &rusqlite::Connection, event: &Event) -> Result<i64> {
+    let ts_epoch_ms = event.timestamp.timestamp_millis();
+    let severity_rank = event.severity.rank();
+
+    let context_json = event
+        .context
+        .as_ref()
+        .map(|c| c.to_string())
+        .or_else(|| Some("{}".to_string()));
+
+    let tags_json = event
+        .tags
+        .as_ref()
+        .map(|t| serde_json::to_string(t).unwrap_or_default());
+
+    let metadata_json = event.metadata.as_ref().map(|m| m.to_string());
+
+    conn.execute(
+        "INSERT INTO events (
+            event_id, ts, ts_epoch_ms, application, version, environment,
+            command, subsystem, hostname, severity, severity_rank, category,
+            error_code, message, exception, stacktrace, stack_norm, root_cause,
+            fingerprint, correlation_id, parent_event_id, context, tags,
+            metadata, ingest_source, schema_v
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+        )",
+        rusqlite::params![
+            event.event_id,
+            event.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            ts_epoch_ms,
+            event.application,
+            event.version,
+            event.environment,
+            event.command,
+            event.subsystem,
+            event.hostname,
+            event.severity.as_str(),
+            severity_rank,
+            event.category,
+            event.error_code,
+            event.message,
+            event.exception,
+            event.stacktrace,
+            event.stack_norm,
+            event.root_cause,
+            event.fingerprint,
+            event.correlation_id,
+            event.parent_event_id,
+            context_json,
+            tags_json,
+            metadata_json,
+            "lib",
+            1,
+        ],
+    )?;
+
+    let row_id = conn.last_insert_rowid();
+
+    update_fingerprint(
+        conn,
+        &event.fingerprint,
+        &event.event_id,
+        &event.message,
+        &event.category,
+    )?;
+
+    Ok(row_id)
+}
+
+fn update_fingerprint(
+    conn: &rusqlite::Connection,
+    fingerprint: &str,
+    event_id: &str,
+    message: &str,
+    category: &Option<String>,
+) -> Result<()> {
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+
+    conn.execute(
+        "INSERT INTO fingerprints (fingerprint, first_seen, last_seen, sample_event_id, category, title)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(fingerprint) DO UPDATE SET
+            last_seen = ?3, count = count + 1",
+        rusqlite::params![fingerprint, now, now, event_id, category, message],
+    )?;
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]

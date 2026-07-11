@@ -1,6 +1,4 @@
-use std::path::PathBuf;
 use tempfile::TempDir;
-use witslog_config::Config;
 use witslog_core::{EventBuilder, Severity};
 use witslog_store::Store;
 

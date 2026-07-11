@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use witslog_config::Config;
-use witslog_core::{EventBuilder, Severity};
+use witslog_core::{EnrichConfig, EventBuilder, Redactor, Severity};
 use witslog_store::{DeleteFilter, Store};
 
 #[derive(Parser)]
@@ -129,7 +129,7 @@ fn log_event(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
-    let config = Config::default_project();
+    let config = Config::load_or_default(&cwd);
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
     if !db_path.parent().and_then(|p| Some(p.exists())).unwrap_or(false) {
@@ -141,6 +141,22 @@ fn log_event(
     }
 
     let store = Store::open_or_create(&db_path)?;
+
+    let redactor = match Redactor::new(&config.redact.custom_patterns) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Invalid redaction pattern in config: {e}");
+            std::process::exit(2);
+        }
+    };
+    let enrich_cfg = EnrichConfig {
+        hostname: config.enrich.hostname,
+        pid: config.enrich.pid,
+        cwd: config.enrich.cwd,
+        argv: config.enrich.argv,
+        git_commit: config.enrich.git_commit,
+        env_allowlist: config.enrich.env_allowlist.clone(),
+    };
 
     let severity = match severity_str.as_deref().unwrap_or("error") {
         "trace" => Severity::Trace,
@@ -166,7 +182,7 @@ fn log_event(
         builder = builder.category(c);
     }
 
-    let event = builder.build();
+    let event = builder.enrich(&enrich_cfg).redact(&redactor).build();
 
     let writer = witslog_store::EventWriter::new(store.conn());
     let _row_id = writer.write(&event)?;
@@ -283,7 +299,10 @@ fn doctor() -> Result<(), Box<dyn std::error::Error>> {
     if db_path.exists() {
         if let Ok(store) = Store::open_or_create(&db_path) {
             println!("  ✓ database healthy");
-            let _ = store;
+            let writer = witslog_store::EventWriter::new(store.conn());
+            if let Ok(dropped) = writer.dropped_count() {
+                println!("  dropped events (lifetime): {}", dropped);
+            }
         }
     }
 

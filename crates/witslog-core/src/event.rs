@@ -67,7 +67,7 @@ pub struct EventBuilder {
     environment: Option<String>,
     command: Option<String>,
     subsystem: Option<String>,
-    hostname: Option<String>,
+    pub(crate) hostname: Option<String>,
     severity: Severity,
     category: Option<String>,
     error_code: Option<String>,
@@ -79,7 +79,7 @@ pub struct EventBuilder {
     fingerprint: Option<String>,
     correlation_id: Option<String>,
     parent_event_id: Option<String>,
-    context: Option<JsonValue>,
+    pub(crate) context: Option<JsonValue>,
     tags: Option<Vec<String>>,
     metadata: Option<JsonValue>,
 }
@@ -202,6 +202,32 @@ impl EventBuilder {
         self
     }
 
+    /// Auto-populate hostname/pid/cwd/argv/git_commit/allow-listed env vars per `cfg`.
+    /// Best-effort: a missing/unreadable field is silently skipped, never errors.
+    pub fn enrich(self, cfg: &crate::enrich::EnrichConfig) -> Self {
+        crate::enrich::enrich(self, cfg)
+    }
+
+    /// Apply secret redaction to message/exception/stacktrace/context/metadata.
+    pub fn redact(mut self, redactor: &crate::redact::Redactor) -> Self {
+        self.message = redactor.redact(&self.message);
+        if let Some(exc) = &self.exception {
+            self.exception = Some(redactor.redact(exc));
+        }
+        if let Some(trace) = &self.stacktrace {
+            let redacted = redactor.redact(trace);
+            self.stack_norm = Some(normalize_stacktrace(&redacted));
+            self.stacktrace = Some(redacted);
+        }
+        if let Some(ctx) = &mut self.context {
+            redactor.redact_json(ctx);
+        }
+        if let Some(meta) = &mut self.metadata {
+            redactor.redact_json(meta);
+        }
+        self
+    }
+
     pub fn build(mut self) -> Event {
         if self.fingerprint.is_none() {
             self.fingerprint = Some(compute_fingerprint(
@@ -238,6 +264,47 @@ impl EventBuilder {
             metadata: self.metadata,
         }
     }
+}
+
+/// Convenience constructor: starts an `EventBuilder` at `Severity::Error`.
+pub fn error(application: impl Into<String>, message: impl Into<String>) -> EventBuilder {
+    EventBuilder::new(application, message).severity(Severity::Error)
+}
+
+/// Convenience constructor: starts an `EventBuilder` at `Severity::Warn`.
+pub fn warn(application: impl Into<String>, message: impl Into<String>) -> EventBuilder {
+    EventBuilder::new(application, message).severity(Severity::Warn)
+}
+
+/// Convenience constructor: starts an `EventBuilder` at `Severity::Info`.
+pub fn info(application: impl Into<String>, message: impl Into<String>) -> EventBuilder {
+    EventBuilder::new(application, message).severity(Severity::Info)
+}
+
+/// Convenience constructor for a caught error: captures the error's message and,
+/// via its `source()` chain, a synthetic stacktrace (masked into `stack_norm` like
+/// any other stacktrace). Rust errors don't carry a portable stack trace, so this
+/// is the best obtainable equivalent without requiring callers to enable
+/// `std::backtrace` themselves.
+pub fn exception(
+    application: impl Into<String>,
+    err: &dyn std::error::Error,
+) -> EventBuilder {
+    let message = err.to_string();
+    let mut builder = EventBuilder::new(application, message)
+        .severity(Severity::Error)
+        .exception(err.to_string());
+
+    let mut chain = Vec::new();
+    let mut cur = err.source();
+    while let Some(e) = cur {
+        chain.push(e.to_string());
+        cur = e.source();
+    }
+    if !chain.is_empty() {
+        builder = builder.stacktrace(chain.join("\n"));
+    }
+    builder
 }
 
 fn normalize_stacktrace(trace: &str) -> String {
@@ -302,5 +369,44 @@ mod tests {
         let fp1 = compute_fingerprint("error message", None, None, None);
         let fp2 = compute_fingerprint("error message", None, None, None);
         assert_eq!(fp1, fp2);
+    }
+
+    #[test]
+    fn severity_presets() {
+        assert_eq!(error("app", "m").build().severity, Severity::Error);
+        assert_eq!(warn("app", "m").build().severity, Severity::Warn);
+        assert_eq!(info("app", "m").build().severity, Severity::Info);
+    }
+
+    #[derive(Debug)]
+    struct Cause;
+    impl std::fmt::Display for Cause {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "root cause")
+        }
+    }
+    impl std::error::Error for Cause {}
+
+    #[derive(Debug)]
+    struct Wrapper;
+    impl std::fmt::Display for Wrapper {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "wrapper failed")
+        }
+    }
+    impl std::error::Error for Wrapper {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&Cause)
+        }
+    }
+
+    #[test]
+    fn exception_captures_message_and_source_chain() {
+        let err = Wrapper;
+        let event = exception("app", &err).build();
+        assert_eq!(event.message, "wrapper failed");
+        assert_eq!(event.exception, Some("wrapper failed".to_string()));
+        assert!(event.stacktrace.unwrap().contains("root cause"));
+        assert!(event.stack_norm.is_some());
     }
 }

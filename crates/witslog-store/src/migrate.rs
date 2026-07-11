@@ -41,6 +41,11 @@ impl<'a> Migrator<'a> {
             self.record_migration(2, "resolved_at")?;
         }
 
+        if current_version < 3 {
+            self.migrate_0003_dropped_counter()?;
+            self.record_migration(3, "dropped_counter")?;
+        }
+
         Ok(())
     }
 
@@ -167,6 +172,20 @@ impl<'a> Migrator<'a> {
 
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS ix_events_unresolved ON events(ts_epoch_ms DESC) WHERE resolved_at IS NULL;",
+        )?;
+
+        Ok(())
+    }
+
+    fn migrate_0003_dropped_counter(&self) -> Result<()> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS runtime_stats (
+              key   TEXT PRIMARY KEY,
+              value INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO runtime_stats (key, value) VALUES ('dropped_events', 0);
+            "#,
         )?;
 
         Ok(())

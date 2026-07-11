@@ -12,5 +12,8 @@ chrono.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+regex.workspace = true
+hostname.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
