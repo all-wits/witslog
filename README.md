@@ -43,19 +43,17 @@ witslog --help
 
 **Pre-1.0, usable for**: init, log, query (by ID), resolve, delete, doctor.
 
-**Shipped** (P0 + partial P1/P2):
+**Shipped** (P0 + P1 + P2):
 - ✅ Structured event model (JSON-friendly).
 - ✅ SQLite storage with WAL, per-project isolation.
 - ✅ Event fingerprinting for dedup (normalized message + stack + category).
 - ✅ Redaction of secrets/PII before store.
+- ✅ Enrichment (hostname/pid/cwd/git_commit auto-capture), config-gated.
+- ✅ Async buffering (batch flush off the caller's thread), config-gated via `[buffer]`.
 - ✅ Resolved/unresolved event lifecycle + deletion.
-- ✅ **Taxonomy**: builtin error category tree (infrastructure/application/runtime/external), deterministic auto-classify via rules (error_code/exception/message keyword/regex).
+- ✅ **Taxonomy**: builtin error category tree (infrastructure/application/runtime/external), deterministic auto-classify via rules (error_code/exception/message keyword/regex), wired into CLI `log`.
 - ✅ C FFI for embedding in any language.
 - ✅ CLI: init, log, query, resolve, delete, doctor.
-
-**In progress** (P1):
-- 🟡 Async buffering, config sections.
-- 🟡 Enrichment (hostname/pid/cwd/git_commit auto-capture).
 
 **Not yet** (P3–P9):
 - ⬜ Full-text search (FTS5) — placeholder in schema, migration pending.

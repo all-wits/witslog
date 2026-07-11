@@ -92,8 +92,12 @@ witslog doctor` — all succeed; `cargo test` green (m1_integration + ffi roundt
 strip secrets/PII before write, buffer writes off the hot path, and expose ergonomic
 severity helpers — so an app gets rich, safe error records with one call.
 
-**Status.** 🟡 partial. Core builder + FFI write shipped (P0); enrichment, redaction,
-buffering, and severity ergonomics remain.
+**Status.** ✅ done. Core builder + FFI write shipped (P0). Enrichment (`enrich.rs`) and
+redaction (`redact.rs`) wired into CLI `log_event`. Async buffer (`buffer.rs`:
+`AsyncBuffer`/`StoreSink`) wired into CLI, gated by `buffer.enabled`; disabled path writes
+synchronously via `EventWriter`, enabled path enqueues and flushes on drop (short-lived CLI
+process joins the flush thread before exit). Severity ergonomics (`error`/`warn`/`info`/etc.)
+shipped in P0.
 
 **Dependencies.** P0. Feeds P6 (SDKs surface these features).
 **Complexity.** M.

@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use witslog_config::Config;
-use witslog_core::{Classifier, EnrichConfig, EventBuilder, Redactor, Severity};
-use witslog_store::{DeleteFilter, Store};
+use witslog_core::{AsyncBuffer, BufferConfig, Classifier, EnrichConfig, EventBuilder, Redactor, Severity};
+use witslog_store::{DeleteFilter, Store, StoreSink};
 
 #[derive(Parser)]
 #[command(name = "witslog")]
@@ -208,8 +208,24 @@ fn log_event(
 
     let event = builder.build();
 
-    let writer = witslog_store::EventWriter::new(store.conn());
-    let _row_id = writer.write(&event)?;
+    if config.buffer.enabled {
+        let buffer_cfg = BufferConfig {
+            enabled: config.buffer.enabled,
+            batch_size: config.buffer.batch_size,
+            flush_interval_ms: config.buffer.flush_interval_ms,
+            queue_capacity: config.buffer.queue_capacity,
+        };
+        let sink = StoreSink::new(store);
+        let buffer = AsyncBuffer::new(sink, buffer_cfg);
+        buffer.enqueue(event.clone());
+        // Dropping joins the flush thread, guaranteeing the event is
+        // persisted (or counted as dropped) before this short-lived
+        // process exits.
+        drop(buffer);
+    } else {
+        let writer = witslog_store::EventWriter::new(store.conn());
+        let _row_id = writer.write(&event)?;
+    }
 
     println!("✓ Event logged");
     println!("  event_id: {}", event.event_id);
