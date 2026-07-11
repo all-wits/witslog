@@ -1,58 +1,153 @@
-# P1 — Logging Library Completion
+# P2 — Taxonomy Engine, + CLAUDE.md/README.md
 
 ## Context
 
-`witslog` = SQLite-backed structured error logging framework, spec in `PLAN.md`/`PHASES.md`. P0 shipped (event model, schema v1+v2, WAL conn, write/resolve/prune, CLI, C-ABI FFI) — confirmed via codegraph audit matching PHASES.md exactly (11 files, no enrich/redact/buffer/taxonomy/query/mcp code exists yet). Branch `feat/P1-logging-library-completion` targets P1: make embedding low-friction and safe — auto-capture runtime context, strip secrets/PII before write, buffer writes off the hot path, add severity ergonomics. This is the P1 TODO checklist in full.
+witslog = SQLite-backed structured error log, per-project DB, AI queryable via
+future MCP. P0 (storage+events) done, P1 (enrich/redact/buffer) partial. P2 —
+taxonomy engine — is next: **todo**, independent of P1/P3, feeds P5
+(`classify_error`, `list_categories`). Repo has no CLAUDE.md/README.md yet;
+user wants both created, matching current shipped state (not aspirational).
 
-## Architecture decisions
+Verified via `codegraph_explore` (source, not guesses):
+- `categories`/`category_aliases` tables exist since `migrate_0001_init`
+  (crates/witslog-store/src/migrate.rs) but are never seeded — no INSERT
+  anywhere in the codebase.
+- No `taxonomy.rs` in `witslog-core` or `witslog-store`. No classifier.
+- `EventBuilder` (crates/witslog-core/src/event.rs:62) has `.enrich(cfg)` and
+  `.redact(redactor)` as explicit chained methods called by CLI/FFI — `build()`
+  itself stays pure (only fills fingerprint). Taxonomy should follow the same
+  shape: an explicit `.classify(&Classifier)` method, not automatic magic in
+  `build()`.
+- `witslog-config::Config` has `EnrichSection`/`RedactSection`/`BufferSection`
+  as sibling `#[serde(default)]` structs on `Config` (crates/witslog-config/src/lib.rs) —
+  taxonomy config mirrors this.
+- Migrations are sequential guarded blocks in `Migrator::migrate()`
+  (`if current_version < N`), each a private `migrate_000N_name` fn +
+  `record_migration`. `migrate_0002_resolved_at` shows the idempotent-column
+  pattern (`pragma_table_info` check before `ALTER TABLE`); `migrate_0003` shows
+  the simple `CREATE TABLE IF NOT EXISTS` + seed-row pattern — the taxonomy
+  seed migration mirrors `migrate_0003`.
+- Store write helpers live on `EventWriter` (crates/witslog-store/src/writer.rs)
+  taking `&DbConnection`/`&Connection` and returning `crate::error::Result<T>`;
+  new taxonomy store fns mirror this shape in a new sibling file.
 
-**Buffer↔Store.** `witslog-core` stays store-agnostic: `buffer.rs` defines `Sink` trait (`write_batch(&[Event]) -> Result<(), SinkError>`); `witslog-store` implements it (`StoreSink`) using the **already-existing** `DbConnection::transaction()` (crates/witslog-store/src/conn.rs:46) — no new transaction plumbing needed. `AsyncBuffer<S: Sink>` uses `std::sync::mpsc` + a plain `std::thread` (matches crate's sync style; no tokio in this path). Callers (FFI/CLI) own the buffer + choose the Sink.
+## Approach
 
-**Dropped counter.** In-process `AtomicU64` on `AsyncBuffer` (source of truth during process life) mirrored best-effort into a new DB table `runtime_stats(key,value)` (migration `migrate_0003_dropped_counter`) so `witslog doctor` in another process can see it. `EventWriter::bump_dropped`/`dropped_count` added.
+**1. `crates/witslog-core/src/taxonomy.rs` (new)** — pure, no I/O, per PLAN.md §Design Rationale ("taxonomy engine: no storage, no I/O — pure fn(event)→labels"):
+- `pub struct Category { canonical: String, parent: Option<String>, label: String }`
+  and a `pub const BUILTIN_CATEGORIES: &[Category]` (or a `builtin_categories()` fn
+  returning a `Vec`) — hierarchy: `infrastructure.*` (network.dns, network.timeout,
+  network.connection_refused, disk, memory), `application.*` (validation, auth,
+  business_logic), `runtime.*` (panic, oom, deadlock), `external.*` (api, database,
+  third_party). Keep leaves modest (~15-20) — spec says "documented leaves", not exhaustive.
+- `pub struct ClassifyRule { id: String, canonical: String, match_kind: MatchKind, pattern: String, tags: Vec<String> }`
+  where `MatchKind` = `ErrorCode | ExceptionName | MessageKeyword | MessageRegex`.
+  Ordered evaluation: error_code map → exception-name map → message keyword/regex,
+  per FR-P2-005.
+- `pub struct Classifier { rules: Vec<ClassifyRule> }` with `Classifier::built_in()`
+  (default rule set covering the builtin leaves, e.g. `ETIMEDOUT`→
+  `infrastructure.network.timeout`) and `Classifier::with_rules(extra)` to append
+  custom rules (config-driven, FR-P2-004-adjacent).
+- `pub struct ClassifyInput<'a> { message: &'a str, exception: Option<&'a str>, error_code: Option<&'a str> }`
+  and `pub struct Classification { canonical: Option<String>, rule_ids: Vec<String>, tags: Vec<String> }`.
+- `Classifier::classify(&self, input: &ClassifyInput) -> Classification` — deterministic,
+  first-match-wins per category of rule, O(rules). No match → `canonical: None`,
+  `tags: ["unclassified"]` (FR-P2-007).
+- Alias resolution is pure too: `pub fn resolve_alias(aliases: &HashMap<String,String>, name: &str) -> String`
+  (trivial lookup-or-identity) — the alias *table* lives in the store; this fn just
+  encapsulates the resolution rule so it's unit-testable without a DB.
 
-**Enrich/redact wiring.** New `EventBuilder::enrich(self, &EnrichConfig) -> Self` and `.redact(self, &Redactor) -> Self` — opt-in chain calls inserted before `.build()` at call sites (FFI, CLI). `.build()` itself unchanged, so no existing caller breaks.
+**2. Wire into `EventBuilder`** (crates/witslog-core/src/event.rs) — mirror
+`.enrich()`/`.redact()`:
+```rust
+pub fn classify(mut self, classifier: &crate::taxonomy::Classifier) -> Self {
+    if self.category.is_none() {
+        let result = classifier.classify(&ClassifyInput { .. });
+        self.category = result.canonical;
+        self.tags = Some(merge tags with result.tags);
+    }
+    self
+}
+```
+Only fills category if caller didn't set one explicitly (FR-P2-005: "lacks an
+explicit category"). CLI/FFI call `.classify(&classifier)` in their build chain,
+same place `.enrich()`/`.redact()` are called today (see crates/witslog-ffi/src/lib.rs
+`witslog_log`, crates/witslog-cli/src/main.rs `log_event`).
 
-**FFI runtime config.** `witslog_configure(json)` sets a process-wide `OnceLock<Mutex<RuntimeConfig>>` (cached compiled `Arc<Redactor>`, not raw patterns). `witslog_log` reads it each call; unbuffered path unchanged if `configure` never called.
+**3. `migrate_0004_seed_taxonomy`** in crates/witslog-store/src/migrate.rs —
+add `if current_version < 4 { self.migrate_0004_seed_taxonomy()?; self.record_migration(4, "seed_taxonomy")?; }`
+in `migrate()`. Body: `INSERT OR IGNORE INTO categories (canonical, parent, label, builtin) VALUES (...)`
+for every entry in `witslog_core::taxonomy::BUILTIN_CATEGORIES` (insert parents
+before children, or rely on `INSERT OR IGNORE` + no FK enforcement issue since
+`foreign_keys=ON` requires parent-before-child — order the const list top-down),
+plus builtin aliases into `category_aliases`. This makes `migrate.rs` depend on
+`witslog-core` — check `witslog-store/Cargo.toml` already has `witslog-core` as a
+path dep (it does, via `Event` usage in writer.rs) so this is free.
 
-**Decided:** buffered `witslog_log` returns `0` (queued, not a row id) when buffering enabled — document as ABI note. Hostname enrichment uses `hostname = "0.4"` crate (add to `[workspace.dependencies]` and `witslog-core/Cargo.toml`).
+**4. `crates/witslog-store/src/taxonomy.rs` (new)** — store-layer CRUD mirroring
+`EventWriter`'s shape:
+- `insert_category(conn, canonical, parent, label) -> Result<()>` — reject if
+  canonical collides with an existing `builtin=1` row (FR-P2-003) with a typed
+  error naming the conflict.
+- `insert_alias(conn, alias, canonical) -> Result<()>` — reject if `canonical`
+  doesn't exist in `categories` (FR-P2-004) — typed error, not a raw FK failure.
+- `resolve_alias_db(conn, name) -> Result<String>` — looks up `category_aliases`,
+  falls through to identity if not an alias.
+- `list_tree(conn) -> Result<Vec<CategoryNode>>` — recursive read of `categories`
+  building the tree (recursive CTE or in-Rust fold over a flat SELECT — flat fold
+  is simpler and fine at this cardinality).
+- Add matching variant(s) to `crate::error::Error` (crates/witslog-store/src/error.rs)
+  for the two reject cases above, e.g. `CategoryCollision(String)`, `UnknownCanonical(String)`.
 
-## New files
+**5. Config** — crates/witslog-config/src/lib.rs: add
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaxonomySection {
+    pub auto_classify: bool,
+    pub rule_file: Option<PathBuf>,
+}
+```
+with `Default` (`auto_classify: true, rule_file: None`), add `pub taxonomy: TaxonomySection`
+field to `Config` + `Config::default_project()`. Rule-file parsing (custom rules
+JSON/TOML → `Vec<ClassifyRule>`) is a small loader in `witslog-core::taxonomy`
+(reuse the `Config::load_from_file`-style error pattern) — invalid rule regex
+rejected at load per FR-P2's "Invalid rule regex … reject config, name rule".
 
-- `crates/witslog-core/src/enrich.rs` — `EnrichConfig{hostname,pid,cwd,argv,git_commit,env_allowlist}` (all bool default true, allowlist empty), `enrich(builder, &cfg) -> EventBuilder` merging into `context` (existing keys win). Each field independently best-effort (`.ok()`/`and_then`, never short-circuits others). `git_commit`: read `.git/HEAD` by walking up like `resolve_project_db` (crates/witslog-config/src/lib.rs:63), no subprocess spawn.
-- `crates/witslog-core/src/redact.rs` — `Redactor{rules}`, `Redactor::new(&[String]) -> Result<Self, RedactError>` (compiles built-ins + custom), `Redactor::built_in()`, `.redact(&str)->String`, `.redact_json(&mut Value)` (recursive). Built-ins: Bearer token, api_key/apikey, password, `AWS_*`/AKIA keys, `user:pass@host` connection strings — replace captured secret only, keep prefix (`Authorization: Bearer «redacted»`). Add `regex = "1"` workspace dep.
-- `crates/witslog-core/src/buffer.rs` — `Sink` trait, `SinkError`, `BufferConfig{enabled,batch_size=50,flush_interval_ms=1000,queue_capacity=1024}`, `AsyncBuffer<S: Sink>` (bounded `mpsc::SyncSender`, background thread, `catch_unwind` per flush iteration, retry-once-then-drop+count on write error, `Drop` does final flush), `SyncSink<S>` fallback for buffer-disabled mode.
-- `crates/witslog-store/src/sink.rs` — `StoreSink{store}` implementing `Sink` via `store.conn().transaction(|conn| { for e in events { write_event(conn, e)? } Ok(()) })`. Requires extracting `EventWriter::write`'s SQL body (crates/witslog-store/src/writer.rs) into `pub(crate) fn write_event(conn: &Connection, event: &Event) -> Result<i64>` reused by both single-write and batch paths.
+**6. Tests** — crates/witslog-core (unit): builtin rule precedence order, alias
+resolution, unclassified path + tag, determinism (same input twice → same
+output). crates/witslog-store (integration, mirror `p1_integration.rs` style):
+fresh DB → categories seeded with full builtin tree + `builtin=1`; custom
+category insert; collision rejected; alias to unknown canonical rejected;
+migration idempotent on re-run.
 
-## Edits
+**7. CLAUDE.md** (repo root) — project overview for future Claude sessions:
+architecture summary (per-project SQLite, WAL, workspace crates), crate map
+(mirror PLAN.md §6 but only crates that exist:
+core/store/config/cli/ffi — mcp/query/plugin not yet), where specs live
+(PLAN.md = design doc, PHASES.md = phase-by-phase EARS/AC/TODO — "read PHASES.md
+before implementing a phase"), migration/testing conventions observed above,
+current phase status pointer (P0 done, P1/P6 partial, P2 next).
 
-- `crates/witslog-core/src/event.rs` — free fns `error/warn/info` (severity presets) and `exception(app, &dyn Error)` (captures `.to_string()` + `source()` chain into stacktrace, reuses existing `normalize_stacktrace` digit-masking → `stack_norm`). `EventBuilder::enrich()`/`.redact()` wrappers.
-- `crates/witslog-core/src/lib.rs` — `pub mod enrich; pub mod redact; pub mod buffer;` + re-exports.
-- `crates/witslog-store/src/writer.rs` — extract `write_event` helper; add `bump_dropped(&self, n: u64)`, `dropped_count(&self) -> Result<u64>`.
-- `crates/witslog-store/src/migrate.rs` — `migrate_0003_dropped_counter` (idempotent, mirrors `migrate_0002_resolved_at` pattern at line 157): `CREATE TABLE IF NOT EXISTS runtime_stats(key TEXT PRIMARY KEY, value INTEGER NOT NULL)` seeded `dropped_events=0`.
-- `crates/witslog-store/src/lib.rs` — `pub mod sink; pub use sink::StoreSink;`.
-- `crates/witslog-config/src/lib.rs` — add `EnrichSection`, `RedactSection{custom_patterns}`, `BufferSection` to `Config` (`#[serde(default)]`), `Config::load_from_file(path) -> Result<Config, ConfigError>` (toml parse; new — no file loading exists today). Config crate stays leaf (no witslog-core dep) — callers build `witslog_core::EnrichConfig`/`Redactor` from these sections.
-- `crates/witslog-ffi/src/lib.rs` — `witslog_configure(json_ptr) -> i32` (0 ok, -1 parse err, -2 invalid redact regex, validated via `Redactor::new` before committing). `witslog_log` reads `RUNTIME_CONFIG`, inserts `.enrich().redact()` before `.build()`; if buffer enabled, lazily-init `OnceLock<AsyncBuffer<StoreSink>>`, enqueue, return `0`; else unchanged synchronous path.
-- `crates/witslog-cli/src/main.rs` — `log_event()`: load config sections, insert `.enrich().redact()` before `.build()`. `doctor()`: print `writer.dropped_count()`.
-- Root `Cargo.toml`: add `regex = "1"`, `hostname = "0.4"` to `[workspace.dependencies]`.
+**8. README.md** (repo root) — user-facing: what witslog is, quickstart
+(`witslog init`, `witslog log`, `witslog query <id>`), current status
+(pre-1.0, CLI usable for init/log/query/resolve/delete/doctor; MCP/search not
+yet built), link to PLAN.md for full spec.
 
-## Sequencing
-
-1. witslog-core: redact.rs → enrich.rs → event.rs edits → buffer.rs
-2. witslog-store: writer.rs refactor (write_event, bump_dropped/dropped_count) → migrate.rs (0003) → sink.rs → lib.rs re-exports
-3. witslog-config: sections + load_from_file
-4. witslog-ffi: witslog_configure, wire into witslog_log
-5. witslog-cli: wire log_event + doctor
-6. Tests (below)
-
-## Tests
-
-- `redact.rs`: fixture table per built-in pattern + custom pattern + invalid-regex-rejects.
-- `enrich.rs`: git repo present → `context.git_commit` set; no repo → graceful omission; field disabled → omission.
-- `buffer.rs`: mock `Sink`, assert 50 enqueues → exactly 1 `write_batch(len=50)`; `Drop` flushes partial batch; `Sink` erroring twice → `dropped_count == batch.len()`, no panic.
-- `sink.rs` / new `tests/p1_buffer_integration.rs`: `StoreSink`+`AsyncBuffer` against real tempdir `Store`, one-transaction batch write.
-- `witslog-ffi` tests (extend existing `with_tmp_cwd` pattern): `witslog_configure` custom pattern → `witslog_log` → stored message redacted; read-only DB (`#[cfg(unix)]` chmod, mirrors `init_db`'s existing perms pattern) → `witslog_log` returns -1, no panic, dropped counter increments if buffered.
-- New `tests/p1_integration.rs` (mirrors `tests/m1_integration.rs` style) covering acceptance criteria end-to-end.
+**9. Update stale progress refs only** — after P2 lands, update PHASES.md P2
+section status legend (⬜ todo → ✅ done / 🟡 partial) + its "Status" line and
+Shipped-capability notes to match what actually shipped, same as P0's audited
+block. Don't touch unrelated PLAN.md/PHASES.md content — no full sweep, no
+rewrites beyond the P2 status marker itself. CLAUDE.md/README.md are written
+fresh against current shipped state, so no drift to fix there.
 
 ## Verification
 
-In a git repo: `witslog log app "token=Bearer xyz"` → `witslog query <id>` shows `«redacted»` token + populated `git_commit`/`hostname`/`pid`/`cwd`. `cargo test` green across all crates including new fixture/integration tests. Buffer test: enqueue 50 events via FFI test harness → assert exactly one transaction commits all 50, `witslog_log` returns 0 for each queued call. Read-only DB path: `witslog_log` doesn't panic, `doctor` shows nonzero dropped count.
+- `cargo test -p witslog-core taxonomy` — rule precedence, alias resolution,
+  unclassified, determinism all green.
+- `cargo test -p witslog-store` — new taxonomy integration test green alongside
+  existing `m1_integration`/`p1_integration`.
+- Manual: `witslog init .` → inspect `categories` table has full builtin tree;
+  `witslog log app "boom" --exception ETIMEDOUT` (once CLI wired) → `witslog query <id>`
+  shows auto-assigned canonical category.
+- `cargo build --workspace` clean; `cargo clippy --workspace` clean.

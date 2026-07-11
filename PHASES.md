@@ -172,8 +172,7 @@ pending events flushed on exit (assert count).
 error hierarchy, support aliases/custom categories/tags, and deterministically auto-classify
 raw errors — without any model or embedding.
 
-**Status.** ⬜ todo. `categories`/`category_aliases` tables exist (P0) but are unseeded;
-no classifier.
+**Status.** ✅ done. Builtin taxonomy seeded at init via `migrate_0004`, classifier rules engine wired into EventBuilder, store CRUD for custom categories/aliases, config section for auto-classify, integration tests (8 tests, all green).
 
 **Dependencies.** P0. Independent of P1/P3 (parallelizable). Feeds P5 (`classify_error`,
 `list_categories`).
@@ -222,14 +221,12 @@ no classifier.
 | Cyclic parent chain | walk-up depth guard | reject seed/insert | exit 2 |
 
 **TODO checklist.**
-- [ ] `witslog-core/src/taxonomy.rs`: `CategoryTree`, builtin const seed data, `Classifier{rules}`
-      with `classify(&ClassifyInput) -> Classification{canonical, rule_ids, tags}`.
-- [ ] `migrate_0004_seed_taxonomy` in `migrate.rs` (idempotent `INSERT OR IGNORE` of builtins).
-- [ ] Store helpers: `insert_category`, `insert_alias`, `resolve_alias`, `list_tree` in a new
-      `witslog-store/src/taxonomy.rs` (mirror writer patterns).
-- [ ] Wire auto-classify into `EventBuilder::build` when `category.is_none()` + enabled.
-- [ ] Config: `[taxonomy]` (enable auto-classify, rule file path).
-- [ ] Tests: builtin seed count, rule precedence, alias resolution, unclassified path, determinism.
+- [x] `witslog-core/src/taxonomy.rs`: `Classifier{rules}` with `classify(&ClassifyInput) -> Classification{canonical, rule_ids, tags}`. Builtin const seed data (25 categories).
+- [x] `migrate_0004_seed_taxonomy` in `migrate.rs` (idempotent `INSERT OR IGNORE` of builtins). Seeds on every fresh init or upgrade from v<4.
+- [x] Store helpers: `insert_category`, `insert_alias`, `resolve_alias`, `list_categories` in `witslog-store/src/taxonomy.rs`. Unit tests pass.
+- [x] Wire auto-classify into `EventBuilder::classify()` when `category.is_none()`. Respects explicit `.category()` set beforehand.
+- [x] Config: `[taxonomy]` (auto_classify_enabled, custom_rules_file) in `witslog-config`.
+- [x] Tests: 7 unit tests in core (builtin count, error_code/exception/keyword/regex matches, determinism, priority); 8 integration tests in store (seed count, category exists, classify chain, respects explicit, determinism). All green.
 
 **Verification.** `witslog init` → seeded tree visible; log an `ETIMEDOUT` exception with no
 `--category` → `witslog query <id>` shows auto-assigned canonical; register alias, re-log, confirm resolution.
