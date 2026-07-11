@@ -228,6 +228,30 @@ impl EventBuilder {
         self
     }
 
+    /// Auto-classify an event if category is not already set.
+    /// Only updates category/tags if classification succeeds and category was null.
+    pub fn classify(mut self, classifier: &crate::taxonomy::Classifier) -> Self {
+        if self.category.is_none() {
+            let classification = classifier.classify(
+                &self.message,
+                self.exception.as_deref(),
+                self.error_code.as_deref(),
+            );
+
+            if let Some(canonical) = classification.canonical {
+                self.category = Some(canonical);
+            }
+
+            // Add suggested tags to existing tags.
+            if !classification.suggested_tags.is_empty() {
+                let mut tags = self.tags.unwrap_or_default();
+                tags.extend(classification.suggested_tags);
+                self.tags = Some(tags);
+            }
+        }
+        self
+    }
+
     pub fn build(mut self) -> Event {
         if self.fingerprint.is_none() {
             self.fingerprint = Some(compute_fingerprint(

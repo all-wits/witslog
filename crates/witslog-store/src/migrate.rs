@@ -46,6 +46,11 @@ impl<'a> Migrator<'a> {
             self.record_migration(3, "dropped_counter")?;
         }
 
+        if current_version < 4 {
+            self.migrate_0004_seed_taxonomy()?;
+            self.record_migration(4, "seed_taxonomy")?;
+        }
+
         Ok(())
     }
 
@@ -187,6 +192,21 @@ impl<'a> Migrator<'a> {
             INSERT OR IGNORE INTO runtime_stats (key, value) VALUES ('dropped_events', 0);
             "#,
         )?;
+
+        Ok(())
+    }
+
+    fn migrate_0004_seed_taxonomy(&self) -> Result<()> {
+        // Seed builtin categories from witslog_core::builtin_categories().
+        // All inserted with builtin=1, idempotent via INSERT OR IGNORE.
+        let categories = witslog_core::builtin_categories();
+
+        for cat in categories {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO categories (canonical, parent, label, builtin) VALUES (?1, ?2, ?3, 1)",
+                rusqlite::params![&cat.canonical, &cat.parent, &cat.label],
+            )?;
+        }
 
         Ok(())
     }

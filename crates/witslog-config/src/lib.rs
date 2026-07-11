@@ -13,6 +13,8 @@ pub struct Config {
     pub redact: RedactSection,
     #[serde(default)]
     pub buffer: BufferSection,
+    #[serde(default)]
+    pub taxonomy: TaxonomySection,
 }
 
 /// Mirrors `witslog_core::EnrichConfig`. Kept as a plain data struct here (this
@@ -64,6 +66,22 @@ impl Default for BufferSection {
             batch_size: 50,
             flush_interval_ms: 1000,
             queue_capacity: 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaxonomySection {
+    pub auto_classify_enabled: bool,
+    pub custom_rules_file: Option<PathBuf>,
+}
+
+impl Default for TaxonomySection {
+    fn default() -> Self {
+        TaxonomySection {
+            auto_classify_enabled: true,
+            custom_rules_file: None,
         }
     }
 }
@@ -123,6 +141,7 @@ impl Config {
             enrich: EnrichSection::default(),
             redact: RedactSection::default(),
             buffer: BufferSection::default(),
+            taxonomy: TaxonomySection::default(),
         }
     }
 

@@ -2,6 +2,7 @@ pub mod conn;
 pub mod error;
 pub mod migrate;
 pub mod sink;
+pub mod taxonomy;
 pub mod writer;
 
 pub use conn::DbConnection;
