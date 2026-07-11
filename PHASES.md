@@ -172,7 +172,7 @@ pending events flushed on exit (assert count).
 error hierarchy, support aliases/custom categories/tags, and deterministically auto-classify
 raw errors — without any model or embedding.
 
-**Status.** ✅ done. Builtin taxonomy seeded at init via `migrate_0004`, classifier rules engine wired into EventBuilder, store CRUD for custom categories/aliases, config section for auto-classify, integration tests (8 tests, all green).
+**Status.** ✅ done. Builtin taxonomy seeded at init via `migrate_0004`, classifier rules engine wired into EventBuilder, store CRUD for custom categories/aliases, config section for auto-classify, integration tests (8 tests, all green). CLI (`witslog log`) wired: `--error-code`/`--exception` flags, auto-classify gated by `taxonomy.auto_classify_enabled`, explicit `--category` still overrides — verified end-to-end through the built binary.
 
 **Dependencies.** P0. Independent of P1/P3 (parallelizable). Feeds P5 (`classify_error`,
 `list_categories`).

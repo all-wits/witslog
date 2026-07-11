@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use witslog_config::Config;
-use witslog_core::{EnrichConfig, EventBuilder, Redactor, Severity};
+use witslog_core::{Classifier, EnrichConfig, EventBuilder, Redactor, Severity};
 use witslog_store::{DeleteFilter, Store};
 
 #[derive(Parser)]
@@ -32,6 +32,10 @@ enum Commands {
         severity: Option<String>,
         #[arg(long)]
         category: Option<String>,
+        #[arg(long)]
+        error_code: Option<String>,
+        #[arg(long)]
+        exception: Option<String>,
     },
     Query {
         event_id: String,
@@ -72,8 +76,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             environment,
             severity,
             category,
+            error_code,
+            exception,
         } => {
-            log_event(&cli.db, &app, &message, version, environment, severity, category)?;
+            log_event(
+                &cli.db, &app, &message, version, environment, severity, category, error_code,
+                exception,
+            )?;
         }
         Commands::Query { event_id } => {
             query_event(&cli.db, &event_id)?;
@@ -126,6 +135,8 @@ fn log_event(
     environment: Option<String>,
     severity_str: Option<String>,
     category: Option<String>,
+    error_code: Option<String>,
+    exception: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
@@ -181,8 +192,21 @@ fn log_event(
     if let Some(c) = category {
         builder = builder.category(c);
     }
+    if let Some(ec) = error_code {
+        builder = builder.error_code(ec);
+    }
+    if let Some(exc) = exception {
+        builder = builder.exception(exc);
+    }
 
-    let event = builder.enrich(&enrich_cfg).redact(&redactor).build();
+    builder = builder.enrich(&enrich_cfg).redact(&redactor);
+
+    if config.taxonomy.auto_classify_enabled {
+        let classifier = Classifier::built_in();
+        builder = builder.classify(&classifier);
+    }
+
+    let event = builder.build();
 
     let writer = witslog_store::EventWriter::new(store.conn());
     let _row_id = writer.write(&event)?;

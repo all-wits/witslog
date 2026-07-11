@@ -73,11 +73,9 @@ Workspace in `crates/`. Built crates:
 
 ## Next Steps
 
-After P2 ships:
-1. **CLI integration**: wire auto_classify_enabled from config → ClassifierBuilder in CLI log command.
-2. **P3**: FTS5 migration (migrate_0005), query engine crate, bm25 ranking, keyset pagination.
-3. **P4**: CLI query/stats/export/import subcommands.
-4. **P5**: MCP server.
+1. **P3**: FTS5 migration (migrate_0005), query engine crate, bm25 ranking, keyset pagination.
+2. **P4**: CLI query/stats/export/import subcommands.
+3. **P5**: MCP server.
 
 ## Dev Workflow
 
