@@ -2,19 +2,21 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub db_scope: DbScope,
     pub db_path: Option<PathBuf>,
-    #[serde(default)]
     pub retention: RetentionPolicy,
-    #[serde(default)]
     pub enrich: EnrichSection,
-    #[serde(default)]
     pub redact: RedactSection,
-    #[serde(default)]
     pub buffer: BufferSection,
-    #[serde(default)]
     pub taxonomy: TaxonomySection,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config::default_project()
+    }
 }
 
 /// Mirrors `witslog_core::EnrichConfig`. Kept as a plain data struct here (this

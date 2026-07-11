@@ -98,6 +98,18 @@ redaction (`redact.rs`) wired into CLI `log_event`. Async buffer (`buffer.rs`:
 synchronously via `EventWriter`, enabled path enqueues and flushes on drop (short-lived CLI
 process joins the flush thread before exit). Severity ergonomics (`error`/`warn`/`info`/etc.)
 shipped in P0.
+Fixed during verification: `Config` (`witslog-config/src/lib.rs`) lacked a container-level
+`#[serde(default)]`, so any partial config file (e.g. a `[buffer]`-only block, as the README
+example shows) failed to parse on the missing `db_scope` field and silently fell back to
+`Config::default_project()` — meaning `buffer.enabled = true` in config never actually took
+effect. Now fixed (`#[serde(default)]` + `impl Default for Config`); confirmed live that a
+partial config now loads and the buffered path genuinely engages.
+**Known caveat (not a defect, a one-shot-process limitation):** because each `witslog log`
+CLI invocation is a fresh process, enabling `[buffer]` makes every call block for up to
+`flush_interval_ms` on exit (the `Drop` impl must wait out the flush thread's `recv_timeout`
+before the process can exit) — buffering only pays off in a long-lived embedded host (P6
+SDKs), not the one-shot CLI. Left as-is since FR-P1-005 only requires `enqueue()` itself be
+non-blocking, which it is; CLI users should leave `buffer.enabled = false` (the default).
 
 **Dependencies.** P0. Feeds P6 (SDKs surface these features).
 **Complexity.** M.
