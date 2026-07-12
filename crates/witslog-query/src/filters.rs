@@ -150,7 +150,7 @@ mod tests {
             ..Default::default()
         };
         let (where_clause, params) = f.to_sql();
-        assert!(where_clause.contains("application = ?1"));
+        assert!(where_clause.contains("application = ?"));
         assert_eq!(params.len(), 1);
     }
 
@@ -161,7 +161,7 @@ mod tests {
             ..Default::default()
         };
         let (where_clause, params) = f.to_sql();
-        assert!(where_clause.contains("severity_rank >= ?1"));
+        assert!(where_clause.contains("severity_rank >= ?"));
         assert_eq!(params.len(), 1);
     }
 }

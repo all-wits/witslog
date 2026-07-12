@@ -55,6 +55,39 @@ enum Commands {
         #[arg(long)]
         cursor: Option<String>,
     },
+    Stats {
+        #[arg(long)]
+        application: Option<String>,
+        #[arg(long)]
+        severity_min: Option<String>,
+    },
+    Export {
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        format: Option<String>,
+    },
+    Import {
+        path: PathBuf,
+    },
+    Vacuum,
+    Prune {
+        #[arg(long)]
+        older_than: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    Config {
+        action: Option<String>,
+    },
+    Archive {
+        #[arg(long)]
+        older_than: Option<String>,
+    },
+    Backup {
+        output: PathBuf,
+    },
+    ListDbs,
     Resolve {
         event_id: String,
     },
@@ -111,6 +144,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cursor,
         } => {
             query_search(&cli.db, &text, application, category, severity_min, limit, cursor)?;
+        }
+        Commands::Stats { application, severity_min } => {
+            cmd_stats(&cli.db, application, severity_min)?;
+        }
+        Commands::Export { output, format } => {
+            cmd_export(&cli.db, output, format)?;
+        }
+        Commands::Import { path } => {
+            cmd_import(&cli.db, &path)?;
+        }
+        Commands::Vacuum => {
+            cmd_vacuum(&cli.db)?;
+        }
+        Commands::Prune { older_than, dry_run } => {
+            cmd_prune(&cli.db, older_than, dry_run)?;
+        }
+        Commands::Config { action } => {
+            cmd_config(&cli.db, action)?;
+        }
+        Commands::Archive { older_than } => {
+            cmd_archive(&cli.db, older_than)?;
+        }
+        Commands::Backup { output } => {
+            cmd_backup(&cli.db, &output)?;
+        }
+        Commands::ListDbs => {
+            cmd_list_dbs()?;
         }
         Commands::Resolve { event_id } => {
             resolve_event(&cli.db, &event_id)?;
@@ -410,6 +470,197 @@ fn doctor() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  dropped events (lifetime): {}", dropped);
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_stats(
+    db_override: &Option<PathBuf>,
+    application: Option<String>,
+    severity_min: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let conn = store.conn().conn();
+    let agg = witslog_query::AggregateEngine::new(&conn);
+
+    let filters = witslog_query::Filters {
+        application,
+        severity_min,
+        ..Default::default()
+    };
+
+    let stats = agg.statistics(&filters)?;
+
+    println!("Statistics");
+    println!("  total events: {}", stats.total);
+    println!("  unique fingerprints: {}", stats.unique_fingerprints);
+    println!("  error rate/day: {:.2}", stats.error_rate_per_day);
+    println!("  by severity:");
+    for (sev, count) in &stats.by_severity {
+        println!("    {}: {}", sev, count);
+    }
+    println!("  by category:");
+    for (cat, count) in &stats.by_category {
+        println!("    {}: {}", cat, count);
+    }
+    println!("  top hosts:");
+    for (host, count) in &stats.top_hosts {
+        println!("    {}: {}", host, count);
+    }
+
+    Ok(())
+}
+
+fn cmd_export(
+    db_override: &Option<PathBuf>,
+    _output: Option<PathBuf>,
+    _format: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let _conn = store.conn().conn();
+
+    // TODO: implement export to NDJSON
+    println!("✓ Export not yet implemented");
+
+    Ok(())
+}
+
+fn cmd_import(
+    db_override: &Option<PathBuf>,
+    _path: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let _store = Store::open_or_create(&db_path)?;
+
+    // TODO: implement import from NDJSON
+    println!("✓ Import not yet implemented");
+
+    Ok(())
+}
+
+fn cmd_vacuum(db_override: &Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let conn = store.conn().conn();
+
+    conn.execute("VACUUM;", [])?;
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", [])?;
+
+    println!("✓ Vacuumed and checkpointed WAL");
+
+    Ok(())
+}
+
+fn cmd_prune(
+    db_override: &Option<PathBuf>,
+    _older_than: Option<String>,
+    _dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let _store = Store::open_or_create(&db_path)?;
+
+    // TODO: implement prune with policy
+    println!("✓ Prune not yet implemented");
+
+    Ok(())
+}
+
+fn cmd_config(
+    db_override: &Option<PathBuf>,
+    _action: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::load_or_default(&cwd);
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    println!("Config resolved:");
+    println!("  db path: {}", db_path.display());
+    println!("  buffer.enabled: {}", config.buffer.enabled);
+    println!("  enrich.hostname: {}", config.enrich.hostname);
+    println!("  taxonomy.auto_classify_enabled: {}", config.taxonomy.auto_classify_enabled);
+
+    Ok(())
+}
+
+fn cmd_archive(
+    db_override: &Option<PathBuf>,
+    _older_than: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let _store = Store::open_or_create(&db_path)?;
+
+    // TODO: implement archive with ATTACH
+    println!("✓ Archive not yet implemented");
+
+    Ok(())
+}
+
+fn cmd_backup(
+    db_override: &Option<PathBuf>,
+    output: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let conn = store.conn().conn();
+
+    // Simple backup: checkpoint WAL then copy file.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", [])?;
+    std::fs::copy(&db_path, output)?;
+
+    println!("✓ Backup created: {}", output.display());
+
+    Ok(())
+}
+
+fn cmd_list_dbs() -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+
+    println!("Known project DBs:");
+    let mut found = false;
+
+    // Walk up from cwd looking for .witslog/ dirs.
+    let mut current = cwd.clone();
+    loop {
+        let marker = current.join(".witslog");
+        if marker.exists() {
+            let db = marker.join("witslog.db");
+            if db.exists() {
+                println!("  {}", db.display());
+                found = true;
+            }
+        }
+
+        if !current.pop() {
+            break;
+        }
+    }
+
+    if !found {
+        println!("  (none found)");
     }
 
     Ok(())
