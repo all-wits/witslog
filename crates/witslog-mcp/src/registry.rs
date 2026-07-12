@@ -72,7 +72,8 @@ impl<'a> ToolRegistry<'a> {
                 })
             }).collect::<Vec<_>>(),
             "next_cursor": result.next_cursor,
-            "total_estimate": result.total_estimate
+            "total_estimate": result.total_estimate,
+            "cursor_warning": result.cursor_warning
         }))
     }
 

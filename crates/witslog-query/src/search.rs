@@ -28,6 +28,10 @@ pub struct SearchResult {
     pub items: Vec<Event>,
     pub next_cursor: Option<String>,
     pub total_estimate: usize,
+    /// Set when the supplied cursor was undecodable and the query fell back
+    /// to the first page instead of erroring.
+    #[serde(default)]
+    pub cursor_warning: Option<String>,
 }
 
 pub struct SearchEngine<'a> {
@@ -84,11 +88,16 @@ impl<'a> SearchEngine<'a> {
         let param_refs: Vec<&dyn rusqlite::ToSql> = filter_params.iter().map(|p| p.as_ref()).collect();
 
         // Keyset pagination: if cursor provided, start after that row.
+        // A tampered/undecodable cursor is ignored — fall back to page 1
+        // rather than erroring — and surfaced via `SearchResult::cursor_warning`
+        // so the caller (CLI/MCP) can report it however it likes.
+        let mut cursor_warning = None;
         let cursor_clause = if let Some(cursor_str) = cursor {
             if let Some(cur) = Cursor::decode(&cursor_str) {
                 format!("AND (ts_epoch_ms < {} OR (ts_epoch_ms = {} AND id < {}))",
                     cur.ts_epoch_ms, cur.ts_epoch_ms, cur.id)
             } else {
+                cursor_warning = Some("cursor could not be decoded; returning first page".to_string());
                 String::new()
             }
         } else {
@@ -170,6 +179,7 @@ impl<'a> SearchEngine<'a> {
             items,
             next_cursor,
             total_estimate,
+            cursor_warning,
         })
     }
 

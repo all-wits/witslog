@@ -86,6 +86,8 @@ enum Commands {
     },
     Backup {
         output: PathBuf,
+        #[arg(long)]
+        force: bool,
     },
     ListDbs,
     Migrate,
@@ -190,8 +192,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Archive { older_than } => {
             cmd_archive(&cli.db, older_than)?;
         }
-        Commands::Backup { output } => {
-            cmd_backup(&cli.db, &output)?;
+        Commands::Backup { output, force } => {
+            cmd_backup(&cli.db, &output, force)?;
         }
         Commands::ListDbs => {
             cmd_list_dbs()?;
@@ -419,6 +421,10 @@ fn query_search(
     };
 
     let result = search.search(text, &filters, limit, cursor, true)?;
+
+    if let Some(warning) = &result.cursor_warning {
+        eprintln!("warning: {}", warning);
+    }
 
     if result.items.is_empty() {
         println!("No matching events.");
@@ -827,10 +833,19 @@ fn cmd_archive(
 fn cmd_backup(
     db_override: &Option<PathBuf>,
     output: &PathBuf,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     let config = Config::default_project();
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    if output.exists() && !force {
+        eprintln!(
+            "Error: backup target '{}' already exists (use --force to overwrite)",
+            output.display()
+        );
+        std::process::exit(2);
+    }
 
     let store = Store::open_or_create(&db_path)?;
     let conn = store.conn().conn();
