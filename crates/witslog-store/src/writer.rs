@@ -278,6 +278,19 @@ pub(crate) fn write_event(conn: &rusqlite::Connection, event: &Event) -> Result<
 
     let metadata_json = event.metadata.as_ref().map(|m| m.to_string());
 
+    // Resolve a category alias to its canonical form before persisting
+    // (FR-P2-004). A category that's neither an alias nor a known canonical
+    // is stored as-is — resolution is best-effort, not validation.
+    let category: Option<String> = match &event.category {
+        Some(cat) => Some(
+            crate::taxonomy::resolve_alias(conn, cat)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| cat.clone()),
+        ),
+        None => None,
+    };
+
     conn.execute(
         "INSERT INTO events (
             event_id, ts, ts_epoch_ms, application, version, environment,
@@ -301,7 +314,7 @@ pub(crate) fn write_event(conn: &rusqlite::Connection, event: &Event) -> Result<
             event.hostname,
             event.severity.as_str(),
             severity_rank,
-            event.category,
+            category,
             event.error_code,
             event.message,
             event.exception,
@@ -326,7 +339,7 @@ pub(crate) fn write_event(conn: &rusqlite::Connection, event: &Event) -> Result<
         &event.fingerprint,
         &event.event_id,
         &event.message,
-        &event.category,
+        &category,
     )?;
 
     Ok(row_id)

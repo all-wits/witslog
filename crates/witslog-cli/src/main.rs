@@ -105,6 +105,29 @@ enum Commands {
         dry_run: bool,
     },
     Doctor,
+    Category {
+        #[command(subcommand)]
+        action: CategoryAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CategoryAction {
+    /// Register a custom category (builtin=0). Rejects if it collides with a builtin canonical.
+    Add {
+        canonical: String,
+        #[arg(long)]
+        parent: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Register an alias pointing at an existing canonical.
+    Alias {
+        alias: String,
+        canonical: String,
+    },
+    /// List the full category tree.
+    List,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -190,6 +213,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Doctor => {
             doctor()?;
+        }
+        Commands::Category { action } => {
+            cmd_category(&cli.db, action)?;
         }
     }
 
@@ -291,7 +317,16 @@ fn log_event(
     builder = builder.enrich(&enrich_cfg).redact(&redactor);
 
     if config.taxonomy.auto_classify_enabled {
-        let classifier = Classifier::built_in();
+        let classifier = match &config.taxonomy.custom_rules_file {
+            Some(path) => match witslog_core::load_custom_rules(path) {
+                Ok(rules) => Classifier::built_in_with_custom(rules),
+                Err(e) => {
+                    eprintln!("Invalid custom rules file {}: {e}", path.display());
+                    std::process::exit(2);
+                }
+            },
+            None => Classifier::built_in(),
+        };
         builder = builder.classify(&classifier);
     }
 
@@ -805,6 +840,58 @@ fn cmd_backup(
     std::fs::copy(&db_path, output)?;
 
     println!("✓ Backup created: {}", output.display());
+
+    Ok(())
+}
+
+fn cmd_category(
+    db_override: &Option<PathBuf>,
+    action: CategoryAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let conn = store.conn().conn();
+
+    match action {
+        CategoryAction::Add { canonical, parent, label } => {
+            let label = label.unwrap_or_else(|| canonical.clone());
+            match witslog_store::taxonomy::insert_category(&conn, &canonical, parent.as_deref(), &label, false) {
+                Ok(()) => {
+                    println!("✓ Category added: {}", canonical);
+                }
+                Err(witslog_store::StoreError::CategoryCollision(c)) => {
+                    eprintln!("Error: '{}' collides with an existing builtin category", c);
+                    std::process::exit(2);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        CategoryAction::Alias { alias, canonical } => {
+            match witslog_store::taxonomy::insert_alias(&conn, &alias, &canonical) {
+                Ok(()) => {
+                    println!("✓ Alias registered: {} -> {}", alias, canonical);
+                }
+                Err(witslog_store::StoreError::UnknownCanonical(c)) => {
+                    eprintln!("Error: alias targets unknown canonical '{}'", c);
+                    std::process::exit(2);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        CategoryAction::List => {
+            let categories = witslog_store::taxonomy::list_categories(&conn)?;
+            println!("Categories ({}):", categories.len());
+            for (canonical, label, parent) in categories {
+                match parent {
+                    Some(p) => println!("  {} ({}) [parent: {}]", canonical, label, p),
+                    None => println!("  {} ({})", canonical, label),
+                }
+            }
+        }
+    }
 
     Ok(())
 }

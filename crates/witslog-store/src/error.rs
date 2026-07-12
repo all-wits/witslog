@@ -18,4 +18,10 @@ pub enum StoreError {
 
     #[error("schema version mismatch: {0}")]
     SchemaVersionMismatch(String),
+
+    #[error("category '{0}' collides with an existing builtin category")]
+    CategoryCollision(String),
+
+    #[error("alias targets unknown canonical '{0}'")]
+    UnknownCanonical(String),
 }

@@ -1,7 +1,12 @@
-use crate::error::Result;
+use crate::error::{Result, StoreError};
 use rusqlite::Connection;
 
-/// Insert a category into the store. Best-effort: skips if already present (idempotent).
+/// Insert a category into the store.
+///
+/// Idempotent for an exact re-insert of the same (non-builtin) category.
+/// Rejects a non-builtin insert whose canonical collides with an existing
+/// **builtin** category (FR-P2-003) — a custom category can't shadow a
+/// builtin one.
 pub fn insert_category(
     conn: &Connection,
     canonical: &str,
@@ -9,6 +14,20 @@ pub fn insert_category(
     label: &str,
     builtin: bool,
 ) -> Result<()> {
+    if !builtin {
+        let existing_builtin: bool = conn
+            .query_row(
+                "SELECT 1 FROM categories WHERE canonical = ?1 AND builtin = 1",
+                [canonical],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        if existing_builtin {
+            return Err(StoreError::CategoryCollision(canonical.to_string()));
+        }
+    }
+
     conn.execute(
         "INSERT OR IGNORE INTO categories (canonical, parent, label, builtin) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![canonical, parent, label, if builtin { 1 } else { 0 }],
@@ -16,8 +35,22 @@ pub fn insert_category(
     Ok(())
 }
 
-/// Insert a category alias. Best-effort: skips if already present.
+/// Insert a category alias. Idempotent for an exact re-insert. Rejects an
+/// alias that targets a canonical which doesn't exist yet (FR error table:
+/// "Alias targets unknown canonical").
 pub fn insert_alias(conn: &Connection, alias: &str, canonical: &str) -> Result<()> {
+    let canonical_exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM categories WHERE canonical = ?1",
+            [canonical],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !canonical_exists {
+        return Err(StoreError::UnknownCanonical(canonical.to_string()));
+    }
+
     conn.execute(
         "INSERT OR IGNORE INTO category_aliases (alias, canonical) VALUES (?1, ?2)",
         rusqlite::params![alias, canonical],
@@ -138,5 +171,73 @@ mod tests {
         insert_category(&conn, "root.child", Some("root"), "Child", true).unwrap();
         let cats = list_categories(&conn).unwrap();
         assert_eq!(cats.len(), 2);
+    }
+
+    #[test]
+    fn custom_category_colliding_with_builtin_is_rejected() {
+        let conn = setup_db().unwrap();
+        insert_category(&conn, "infrastructure.network.dns", None, "DNS", true).unwrap();
+        let result = insert_category(&conn, "infrastructure.network.dns", None, "Custom DNS", false);
+        assert!(matches!(result, Err(StoreError::CategoryCollision(_))));
+    }
+
+    #[test]
+    fn custom_category_same_name_as_custom_is_idempotent() {
+        let conn = setup_db().unwrap();
+        insert_category(&conn, "app.custom", None, "Custom", false).unwrap();
+        insert_category(&conn, "app.custom", None, "Custom", false).unwrap();
+        assert_eq!(count_categories(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn alias_targeting_unknown_canonical_is_rejected() {
+        let conn = setup_db().unwrap();
+        let result = insert_alias(&conn, "some_alias", "nonexistent.canonical");
+        assert!(matches!(result, Err(StoreError::UnknownCanonical(_))));
+    }
+
+    #[test]
+    fn write_event_resolves_alias_to_canonical() {
+        use crate::writer::write_event;
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE events (
+              id INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, ts TEXT NOT NULL,
+              ts_epoch_ms INTEGER NOT NULL, application TEXT NOT NULL, version TEXT,
+              environment TEXT, command TEXT, subsystem TEXT, hostname TEXT,
+              severity TEXT NOT NULL, severity_rank INTEGER NOT NULL, category TEXT,
+              error_code TEXT, message TEXT NOT NULL, exception TEXT, stacktrace TEXT,
+              stack_norm TEXT, root_cause TEXT, fingerprint TEXT NOT NULL,
+              correlation_id TEXT, parent_event_id TEXT, context TEXT, tags TEXT,
+              metadata TEXT, ingest_source TEXT, schema_v INTEGER NOT NULL
+            );
+            CREATE TABLE categories (
+              canonical TEXT PRIMARY KEY, parent TEXT, label TEXT, builtin INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE category_aliases (
+              alias TEXT PRIMARY KEY, canonical TEXT NOT NULL REFERENCES categories(canonical)
+            );
+            CREATE TABLE fingerprints (
+              fingerprint TEXT PRIMARY KEY, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+              count INTEGER NOT NULL DEFAULT 1, sample_event_id TEXT NOT NULL, category TEXT, title TEXT
+            );
+            "#,
+        )
+        .unwrap();
+
+        insert_category(&conn, "infrastructure.network.dns", None, "DNS", true).unwrap();
+        insert_alias(&conn, "dns_error", "infrastructure.network.dns").unwrap();
+
+        let event = witslog_core::EventBuilder::new("app", "dns lookup failed")
+            .category("dns_error")
+            .build();
+
+        write_event(&conn, &event).unwrap();
+
+        let stored_category: String = conn
+            .query_row("SELECT category FROM events WHERE event_id = ?1", [&event.event_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored_category, "infrastructure.network.dns");
     }
 }

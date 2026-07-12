@@ -69,20 +69,69 @@ pub struct Classification {
 }
 
 /// Rule for auto-classifying errors (error_code map, exception map, message regex/keyword).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassifyRule {
     pub id: String,
     pub kind: ClassifyRuleKind,
     pub canonical: String,
+    #[serde(default)]
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClassifyRuleKind {
     ErrorCode(String),           // Exact error_code match
     Exception(String),           // Exact exception type match
     MessageKeyword(String),      // Substring in message (case-insensitive)
     MessageRegex(String),        // Regex on message (compiled on load; see validate_rule)
+}
+
+/// Error loading a custom rules file: invalid JSON, or a `MessageRegex` rule
+/// whose pattern fails to compile (checked eagerly so a bad rule is rejected
+/// at load time, not silently skipped at match time).
+#[derive(Debug)]
+pub enum CustomRulesError {
+    Io(std::io::Error),
+    Parse(serde_json::Error),
+    InvalidRegex { rule_id: String, pattern: String, source: regex::Error },
+}
+
+impl std::fmt::Display for CustomRulesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CustomRulesError::Io(e) => write!(f, "failed to read custom rules file: {}", e),
+            CustomRulesError::Parse(e) => write!(f, "failed to parse custom rules file: {}", e),
+            CustomRulesError::InvalidRegex { rule_id, pattern, source } => write!(
+                f,
+                "custom rule '{}' has invalid regex '{}': {}",
+                rule_id, pattern, source
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CustomRulesError {}
+
+/// Load custom classify rules from a JSON file (an array of `ClassifyRule`).
+/// Validates every `MessageRegex` pattern compiles before returning, so a
+/// bad rule is rejected at load time rather than silently ignored later.
+pub fn load_custom_rules(path: &std::path::Path) -> Result<Vec<ClassifyRule>, CustomRulesError> {
+    let contents = std::fs::read_to_string(path).map_err(CustomRulesError::Io)?;
+    let rules: Vec<ClassifyRule> = serde_json::from_str(&contents).map_err(CustomRulesError::Parse)?;
+
+    for rule in &rules {
+        if let ClassifyRuleKind::MessageRegex(pattern) = &rule.kind {
+            if let Err(source) = regex::Regex::new(pattern) {
+                return Err(CustomRulesError::InvalidRegex {
+                    rule_id: rule.id.clone(),
+                    pattern: pattern.clone(),
+                    source,
+                });
+            }
+        }
+    }
+
+    Ok(rules)
 }
 
 /// Classifier — applies rules in order (error_code → exception → message).
@@ -147,6 +196,14 @@ impl Classifier {
                 tags: vec!["oom".to_string()],
             },
         ];
+        Classifier::new(rules)
+    }
+
+    /// Builtin rules with user-supplied custom rules layered on top (checked
+    /// first, so a custom rule can override a builtin for the same code/exception).
+    pub fn built_in_with_custom(custom: Vec<ClassifyRule>) -> Self {
+        let mut rules = custom;
+        rules.extend(Classifier::built_in().rules);
         Classifier::new(rules)
     }
 
