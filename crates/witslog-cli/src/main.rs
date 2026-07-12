@@ -518,34 +518,100 @@ fn cmd_stats(
 
 fn cmd_export(
     db_override: &Option<PathBuf>,
-    _output: Option<PathBuf>,
+    output: Option<PathBuf>,
     _format: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
     let cwd = std::env::current_dir()?;
     let config = Config::default_project();
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
     let store = Store::open_or_create(&db_path)?;
-    let _conn = store.conn().conn();
+    let writer = witslog_store::EventWriter::new(store.conn());
 
-    // TODO: implement export to NDJSON
-    println!("✓ Export not yet implemented");
+    let mut sink: Box<dyn Write> = match &output {
+        Some(path) => Box::new(std::io::BufWriter::new(std::fs::File::create(path)?)),
+        None => Box::new(std::io::BufWriter::new(std::io::stdout())),
+    };
+
+    let mut count = 0usize;
+    let mut export_err: Option<Box<dyn std::error::Error>> = None;
+    writer.for_each_event(None, None, |event| {
+        if export_err.is_some() {
+            return;
+        }
+        match serde_json::to_string(&event) {
+            Ok(line) => {
+                if let Err(e) = writeln!(sink, "{}", line) {
+                    export_err = Some(Box::new(e));
+                    return;
+                }
+                count += 1;
+            }
+            Err(e) => export_err = Some(Box::new(e)),
+        }
+    })?;
+
+    if let Some(e) = export_err {
+        return Err(e);
+    }
+
+    sink.flush()?;
+
+    if output.is_some() {
+        eprintln!("✓ Exported {} event(s)", count);
+    }
 
     Ok(())
 }
 
 fn cmd_import(
     db_override: &Option<PathBuf>,
-    _path: &PathBuf,
+    path: &PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::BufRead;
+
     let cwd = std::env::current_dir()?;
     let config = Config::default_project();
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
-    let _store = Store::open_or_create(&db_path)?;
+    let store = Store::open_or_create(&db_path)?;
+    let writer = witslog_store::EventWriter::new(store.conn());
 
-    // TODO: implement import from NDJSON
-    println!("✓ Import not yet implemented");
+    let file = std::fs::File::open(path)?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut imported = 0usize;
+    let mut skipped_dupe = 0usize;
+    let mut skipped_malformed = 0usize;
+
+    for (line_no, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<witslog_core::Event>(&line) {
+            Ok(event) => match writer.write_if_absent(&event) {
+                Ok(true) => imported += 1,
+                Ok(false) => skipped_dupe += 1,
+                Err(e) => {
+                    eprintln!("  line {}: write error: {}", line_no + 1, e);
+                    skipped_malformed += 1;
+                }
+            },
+            Err(e) => {
+                eprintln!("  line {}: malformed: {}", line_no + 1, e);
+                skipped_malformed += 1;
+            }
+        }
+    }
+
+    println!("✓ Import complete");
+    println!("  imported: {}", imported);
+    println!("  skipped (duplicate event_id): {}", skipped_dupe);
+    println!("  skipped (malformed): {}", skipped_malformed);
 
     Ok(())
 }
@@ -566,19 +632,80 @@ fn cmd_vacuum(db_override: &Option<PathBuf>) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Parse a relative age string like "30d", "24h", "10m" into milliseconds.
+fn parse_age_ms(spec: &str) -> Option<i64> {
+    let spec = spec.trim();
+    if spec.len() < 2 {
+        return None;
+    }
+    let (num_str, unit) = spec.split_at(spec.len() - 1);
+    let num: i64 = num_str.parse().ok()?;
+    let ms = match unit {
+        "d" => num * 24 * 60 * 60 * 1000,
+        "h" => num * 60 * 60 * 1000,
+        "m" => num * 60 * 1000,
+        _ => return None,
+    };
+    Some(ms)
+}
+
 fn cmd_prune(
     db_override: &Option<PathBuf>,
-    _older_than: Option<String>,
-    _dry_run: bool,
+    older_than: Option<String>,
+    dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     let config = Config::default_project();
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
-    let _store = Store::open_or_create(&db_path)?;
+    let older_than = match older_than {
+        Some(s) => s,
+        None => {
+            eprintln!("Error: --older-than is required (e.g. --older-than 30d)");
+            std::process::exit(2);
+        }
+    };
 
-    // TODO: implement prune with policy
-    println!("✓ Prune not yet implemented");
+    let age_ms = match parse_age_ms(&older_than) {
+        Some(ms) => ms,
+        None => {
+            eprintln!("Error: invalid --older-than value '{}' (expected e.g. 30d, 24h, 10m)", older_than);
+            std::process::exit(2);
+        }
+    };
+
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - age_ms;
+
+    let store = Store::open_or_create(&db_path)?;
+    let conn = store.conn().conn();
+
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE ts_epoch_ms < ?1",
+        [cutoff_ms],
+        |row| row.get(0),
+    )?;
+
+    if dry_run {
+        println!("(dry run — no rows deleted)");
+        println!("  would delete: {} event(s) older than {}", count, older_than);
+        return Ok(());
+    }
+
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT event_id FROM events WHERE ts_epoch_ms < ?1")?;
+        let rows = stmt.query_map([cutoff_ms], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    for id in &ids {
+        conn.execute("DELETE FROM events WHERE event_id = ?1", [id])?;
+        conn.execute(
+            "DELETE FROM error_edges WHERE src_event_id = ?1 OR dst_event_id = ?1",
+            [id],
+        )?;
+    }
+
+    println!("✓ Pruned {} event(s) older than {}", ids.len(), older_than);
 
     Ok(())
 }
@@ -602,16 +729,58 @@ fn cmd_config(
 
 fn cmd_archive(
     db_override: &Option<PathBuf>,
-    _older_than: Option<String>,
+    older_than: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     let config = Config::default_project();
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
-    let _store = Store::open_or_create(&db_path)?;
+    let older_than = match older_than {
+        Some(s) => s,
+        None => {
+            eprintln!("Error: --older-than is required (e.g. --older-than 90d)");
+            std::process::exit(2);
+        }
+    };
 
-    // TODO: implement archive with ATTACH
-    println!("✓ Archive not yet implemented");
+    let age_ms = match parse_age_ms(&older_than) {
+        Some(ms) => ms,
+        None => {
+            eprintln!("Error: invalid --older-than value '{}' (expected e.g. 90d, 24h)", older_than);
+            std::process::exit(2);
+        }
+    };
+
+    let cutoff_ms = chrono::Utc::now().timestamp_millis() - age_ms;
+
+    let store = Store::open_or_create(&db_path)?;
+    let conn = store.conn().conn();
+
+    let now = chrono::Utc::now().format("%Y-Q%m").to_string();
+    let archive_path = db_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!("witslog-{}.db", now));
+
+    // Attach archive DB and ensure it has the events table (idempotent schema copy).
+    conn.execute(
+        &format!("ATTACH DATABASE '{}' AS archive", archive_path.display().to_string().replace('\'', "''")),
+        [],
+    )?;
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS archive.events AS SELECT * FROM events WHERE 0;",
+    )?;
+
+    let moved: usize = conn.execute(
+        "INSERT INTO archive.events SELECT * FROM events WHERE ts_epoch_ms < ?1",
+        [cutoff_ms],
+    )?;
+
+    conn.execute("DELETE FROM events WHERE ts_epoch_ms < ?1", [cutoff_ms])?;
+    conn.execute("DETACH DATABASE archive", [])?;
+
+    println!("✓ Archived {} event(s) older than {} to {}", moved, older_than, archive_path.display());
 
     Ok(())
 }

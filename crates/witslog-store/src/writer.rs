@@ -49,113 +49,11 @@ impl<'a> EventWriter<'a> {
                     parent_event_id, context, tags, metadata, resolved_at
              FROM events WHERE event_id = ?1",
             [event_id],
-            |row| {
-                let ts_str: String = row.get(1)?;
-                let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&chrono::Utc));
-
-                Ok((
-                    row.get::<_, String>(0)?,
-                    ts,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, Option<String>>(12)?,
-                    row.get::<_, Option<String>>(13)?,
-                    row.get::<_, Option<String>>(14)?,
-                    row.get::<_, Option<String>>(15)?,
-                    row.get::<_, String>(16)?,
-                    row.get::<_, Option<String>>(17)?,
-                    row.get::<_, Option<String>>(18)?,
-                    row.get::<_, Option<String>>(19)?,
-                    row.get::<_, Option<String>>(20)?,
-                    row.get::<_, Option<String>>(21)?,
-                    row.get::<_, Option<String>>(22)?,
-                ))
-            },
+            |row| hydrate_event_row(row),
         );
 
         match result {
-            Ok((
-                event_id,
-                Some(timestamp),
-                application,
-                version,
-                environment,
-                command,
-                subsystem,
-                hostname,
-                severity_str,
-                category,
-                error_code,
-                message,
-                exception,
-                stacktrace,
-                stack_norm,
-                root_cause,
-                fingerprint,
-                correlation_id,
-                parent_event_id,
-                context_json,
-                tags_json,
-                metadata_json,
-                resolved_at_str,
-            )) => {
-                let severity = match severity_str.as_str() {
-                    "trace" => witslog_core::Severity::Trace,
-                    "debug" => witslog_core::Severity::Debug,
-                    "info" => witslog_core::Severity::Info,
-                    "warn" => witslog_core::Severity::Warn,
-                    "error" => witslog_core::Severity::Error,
-                    "critical" => witslog_core::Severity::Critical,
-                    "fatal" => witslog_core::Severity::Fatal,
-                    _ => witslog_core::Severity::Error,
-                };
-
-                let context = context_json.and_then(|j| serde_json::from_str(&j).ok());
-                let tags = tags_json.and_then(|j| serde_json::from_str(&j).ok());
-                let metadata = metadata_json.and_then(|j| serde_json::from_str(&j).ok());
-                let resolved_at = resolved_at_str.and_then(|s| {
-                    chrono::DateTime::parse_from_rfc3339(&s)
-                        .ok()
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                });
-
-                Ok(Some(Event {
-                    event_id,
-                    timestamp,
-                    application,
-                    version,
-                    environment,
-                    command,
-                    subsystem,
-                    hostname,
-                    severity,
-                    category,
-                    error_code,
-                    message,
-                    exception,
-                    stacktrace,
-                    stack_norm,
-                    root_cause,
-                    fingerprint,
-                    correlation_id,
-                    parent_event_id,
-                    resolved_at,
-                    context,
-                    tags,
-                    metadata,
-                }))
-            }
-            Ok(_) => Ok(None),
+            Ok(event) => Ok(Some(event)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -171,6 +69,73 @@ impl<'a> EventWriter<'a> {
         )?;
 
         Ok(())
+    }
+
+    /// Stream all events within an optional time range, ordered by ts ascending.
+    /// Used by `export` — bounded memory via callback rather than a `Vec`.
+    pub fn for_each_event<F>(&self, from_ms: Option<i64>, to_ms: Option<i64>, mut f: F) -> Result<()>
+    where
+        F: FnMut(Event),
+    {
+        let conn = self.conn.conn();
+
+        let mut clauses = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(from) = from_ms {
+            clauses.push(format!("ts_epoch_ms >= ?{}", params.len() + 1));
+            params.push(Box::new(from));
+        }
+        if let Some(to) = to_ms {
+            clauses.push(format!("ts_epoch_ms <= ?{}", params.len() + 1));
+            params.push(Box::new(to));
+        }
+
+        let where_clause = if clauses.is_empty() {
+            "1=1".to_string()
+        } else {
+            clauses.join(" AND ")
+        };
+
+        let sql = format!(
+            "SELECT event_id, ts, application, version, environment, command, subsystem,
+                    hostname, severity, category, error_code, message, exception,
+                    stacktrace, stack_norm, root_cause, fingerprint, correlation_id,
+                    parent_event_id, context, tags, metadata, resolved_at
+             FROM events WHERE {} ORDER BY ts_epoch_ms ASC",
+            where_clause
+        );
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| hydrate_event_row(row))?;
+
+        for row_result in rows {
+            f(row_result?);
+        }
+
+        Ok(())
+    }
+
+    /// Insert an event if its `event_id` doesn't already exist (idempotent import).
+    /// Returns true if inserted, false if it was a duplicate.
+    pub fn write_if_absent(&self, event: &Event) -> Result<bool> {
+        let conn = self.conn.conn();
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM events WHERE event_id = ?1",
+                [&event.event_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        if exists {
+            return Ok(false);
+        }
+
+        write_event(&conn, event)?;
+        Ok(true)
     }
 
     pub fn delete_resolved(&self, filter: &DeleteFilter) -> Result<Vec<String>> {
@@ -225,6 +190,72 @@ impl<'a> EventWriter<'a> {
 
         Ok(ids)
     }
+}
+
+/// Hydrates an `Event` from a row produced by the canonical column list:
+/// event_id, ts, application, version, environment, command, subsystem,
+/// hostname, severity, category, error_code, message, exception,
+/// stacktrace, stack_norm, root_cause, fingerprint, correlation_id,
+/// parent_event_id, context, tags, metadata, resolved_at
+pub(crate) fn hydrate_event_row(row: &rusqlite::Row) -> rusqlite::Result<Event> {
+    let ts_str: String = row.get(1)?;
+    let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now);
+
+    let severity_str: String = row.get(8)?;
+    let severity = match severity_str.as_str() {
+        "trace" => witslog_core::Severity::Trace,
+        "debug" => witslog_core::Severity::Debug,
+        "info" => witslog_core::Severity::Info,
+        "warn" => witslog_core::Severity::Warn,
+        "error" => witslog_core::Severity::Error,
+        "critical" => witslog_core::Severity::Critical,
+        "fatal" => witslog_core::Severity::Fatal,
+        _ => witslog_core::Severity::Error,
+    };
+
+    let context = row
+        .get::<_, Option<String>>(19)?
+        .and_then(|j| serde_json::from_str(&j).ok());
+    let tags = row
+        .get::<_, Option<String>>(20)?
+        .and_then(|j| serde_json::from_str(&j).ok());
+    let metadata = row
+        .get::<_, Option<String>>(21)?
+        .and_then(|j| serde_json::from_str(&j).ok());
+    let resolved_at = row.get::<_, Option<String>>(22)?.and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+    });
+
+    Ok(Event {
+        event_id: row.get(0)?,
+        timestamp: ts,
+        application: row.get(2)?,
+        version: row.get(3)?,
+        environment: row.get(4)?,
+        command: row.get(5)?,
+        subsystem: row.get(6)?,
+        hostname: row.get(7)?,
+        severity,
+        category: row.get(9)?,
+        error_code: row.get(10)?,
+        message: row.get(11)?,
+        exception: row.get(12)?,
+        stacktrace: row.get(13)?,
+        stack_norm: row.get(14)?,
+        root_cause: row.get(15)?,
+        fingerprint: row.get(16)?,
+        correlation_id: row.get(17)?,
+        parent_event_id: row.get(18)?,
+        resolved_at,
+        context,
+        tags,
+        metadata,
+    })
 }
 
 /// Inserts one event and rolls it into the `fingerprints` table. Shared by

@@ -17,6 +17,7 @@ witslog-query = { path = "../witslog-query" }
 clap.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+rusqlite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
