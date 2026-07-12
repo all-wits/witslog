@@ -88,6 +88,7 @@ enum Commands {
         output: PathBuf,
     },
     ListDbs,
+    Migrate,
     Resolve {
         event_id: String,
     },
@@ -171,6 +172,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::ListDbs => {
             cmd_list_dbs()?;
+        }
+        Commands::Migrate => {
+            cmd_migrate(&cli.db)?;
         }
         Commands::Resolve { event_id } => {
             resolve_event(&cli.db, &event_id)?;
@@ -801,6 +805,50 @@ fn cmd_backup(
     std::fs::copy(&db_path, output)?;
 
     println!("✓ Backup created: {}", output.display());
+
+    Ok(())
+}
+
+fn read_schema_version(db_path: &PathBuf) -> Option<i32> {
+    if !db_path.exists() {
+        return None;
+    }
+    let conn = rusqlite::Connection::open(db_path).ok()?;
+    conn.query_row(
+        "SELECT COALESCE(value, '0') FROM schema_meta WHERE key = 'schema_version'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|s| s.parse().ok())
+}
+
+fn cmd_migrate(db_override: &Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    if !db_path.exists() {
+        return Err(format!(
+            "Database not initialized. Run 'witslog init' in {}",
+            cwd.display()
+        )
+        .into());
+    }
+
+    let before = read_schema_version(&db_path).unwrap_or(0);
+
+    let backup_path = db_path.with_extension("bak");
+    std::fs::copy(&db_path, &backup_path)?;
+
+    // Store::open_or_create runs pending migrations on open.
+    let _store = Store::open_or_create(&db_path)?;
+
+    let after = read_schema_version(&db_path).unwrap_or(0);
+
+    println!("✓ Migration complete");
+    println!("  schema version: {} -> {}", before, after);
+    println!("  backup: {}", backup_path.display());
 
     Ok(())
 }
