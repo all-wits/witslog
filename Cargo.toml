@@ -3,6 +3,7 @@ members = [
     "crates/witslog-core",
     "crates/witslog-store",
     "crates/witslog-config",
+    "crates/witslog-query",
     "crates/witslog-cli",
     "crates/witslog-ffi",
 ]

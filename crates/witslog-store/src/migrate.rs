@@ -51,6 +51,11 @@ impl<'a> Migrator<'a> {
             self.record_migration(4, "seed_taxonomy")?;
         }
 
+        if current_version < 5 {
+            self.migrate_0005_fts5()?;
+            self.record_migration(5, "fts5")?;
+        }
+
         Ok(())
     }
 
@@ -205,6 +210,62 @@ impl<'a> Migrator<'a> {
             self.conn.execute(
                 "INSERT OR IGNORE INTO categories (canonical, parent, label, builtin) VALUES (?1, ?2, ?3, 1)",
                 rusqlite::params![&cat.canonical, &cat.parent, &cat.label],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn migrate_0005_fts5(&self) -> Result<()> {
+        let fts_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events_fts'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        if !fts_exists {
+            self.conn.execute_batch(
+                r#"
+                CREATE VIRTUAL TABLE events_fts USING fts5(
+                  message, exception, stack_norm, root_cause, tags_text, category,
+                  content='events', content_rowid='id',
+                  tokenize = "unicode61 remove_diacritics 2 tokenchars '._:/-'"
+                );
+                "#,
+            )?;
+
+            self.conn.execute_batch(
+                r#"
+                CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
+                  INSERT INTO events_fts(rowid,message,exception,stack_norm,root_cause,tags_text,category)
+                  VALUES (new.id,new.message,new.exception,new.stack_norm,new.root_cause,
+                          (SELECT group_concat(value,' ') FROM json_each(new.tags)), new.category);
+                END;
+                "#,
+            )?;
+
+            self.conn.execute_batch(
+                r#"
+                CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
+                  INSERT INTO events_fts(events_fts,rowid,message,exception,stack_norm,root_cause,tags_text,category)
+                  VALUES ('delete',old.id,old.message,old.exception,old.stack_norm,old.root_cause,'',old.category);
+                END;
+                "#,
+            )?;
+
+            // Backfill existing events into FTS index.
+            self.conn.execute_batch(
+                r#"
+                INSERT INTO events_fts(rowid,message,exception,stack_norm,root_cause,tags_text,category)
+                SELECT events.id,events.message,events.exception,events.stack_norm,events.root_cause,
+                       COALESCE(group_concat(value,' '),''),events.category
+                FROM events
+                LEFT JOIN json_each(events.tags)
+                GROUP BY events.id;
+                "#,
             )?;
         }
 

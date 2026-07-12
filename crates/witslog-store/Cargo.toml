@@ -17,3 +17,4 @@ witslog-core = { path = "../witslog-core" }
 
 [dev-dependencies]
 tempfile.workspace = true
+witslog-query = { path = "../witslog-query" }

@@ -37,8 +37,23 @@ enum Commands {
         #[arg(long)]
         exception: Option<String>,
     },
-    Query {
+    Get {
         event_id: String,
+    },
+    #[command(short_flag = 'q')]
+    Query {
+        #[arg(value_name = "FTS_QUERY")]
+        text: String,
+        #[arg(long)]
+        application: Option<String>,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        severity_min: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        cursor: Option<String>,
     },
     Resolve {
         event_id: String,
@@ -84,8 +99,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 exception,
             )?;
         }
-        Commands::Query { event_id } => {
-            query_event(&cli.db, &event_id)?;
+        Commands::Get { event_id } => {
+            get_event(&cli.db, &event_id)?;
+        }
+        Commands::Query {
+            text,
+            application,
+            category,
+            severity_min,
+            limit,
+            cursor,
+        } => {
+            query_search(&cli.db, &text, application, category, severity_min, limit, cursor)?;
         }
         Commands::Resolve { event_id } => {
             resolve_event(&cli.db, &event_id)?;
@@ -235,7 +260,7 @@ fn log_event(
     Ok(())
 }
 
-fn query_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn get_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
     let config = Config::default_project();
@@ -264,6 +289,47 @@ fn query_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<
         None => {
             println!("Event not found: {}", event_id);
         }
+    }
+
+    Ok(())
+}
+
+fn query_search(
+    db_override: &Option<PathBuf>,
+    text: &str,
+    application: Option<String>,
+    category: Option<String>,
+    severity_min: Option<String>,
+    limit: usize,
+    cursor: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let conn = store.conn().conn();
+    let search = witslog_query::SearchEngine::new(&conn);
+
+    let filters = witslog_query::Filters {
+        application,
+        category,
+        severity_min,
+        ..Default::default()
+    };
+
+    let result = search.search(text, &filters, limit, cursor, true)?;
+
+    if result.items.is_empty() {
+        println!("No matching events.");
+    }
+    for event in &result.items {
+        println!("{}  [{}] {:?} :: {}", event.event_id, event.application, event.severity, event.message);
+    }
+    println!("\n{} match(es) (showing {})", result.total_estimate, result.items.len());
+    if let Some(next) = result.next_cursor {
+        println!("next cursor: {}", next);
     }
 
     Ok(())
