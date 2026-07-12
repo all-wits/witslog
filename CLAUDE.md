@@ -18,15 +18,17 @@ Workspace in `crates/`. Built crates:
 | **witslog-core** | Event model, builders, enrichment, redaction, fingerprinting, taxonomy, severity | `event.rs` (Event/EventBuilder/Severity), `taxonomy.rs` (Classifier, builtin categories), `enrich.rs`, `redact.rs`, `fingerprint.rs`, `buffer.rs` |
 | **witslog-store** | SQLite schema, migrations, connections, write path, taxonomy store-layer | `migrate.rs` (M1-M4: init/resolved_at/dropped_counter/seed_taxonomy), `conn.rs` (pragma setup, WAL), `writer.rs` (event insert, fingerprint rollup), `taxonomy.rs` (store CRUD) |
 | **witslog-config** | Layered config resolution, defaults, sections | `lib.rs` (Config struct + EnrichSection/RedactSection/BufferSection/TaxonomySection) |
-| **witslog-cli** | CLI subcommands (init/log/query/resolve/delete/doctor) | `main.rs` (clap Commands) |
+| **witslog-query** | FTS5 search + structured filters + aggregates | `search.rs` (bm25 + keyset cursor), `filters.rs`, `aggregates.rs` (stats/timeline/top_failures), `correlate.rs` (edge walks) |
+| **witslog-mcp** | MCP tool registry + JSON-RPC transport | `registry.rs` (all 12 tools), `transport.rs` (stdio JSON-RPC), `tools.rs` (schema) — built, **not yet wired to CLI** |
+| **witslog-cli** | CLI subcommands (init/log/get/query/stats/export/import/vacuum/prune/config/archive/backup/list-dbs/migrate/resolve/delete/doctor/category) | `main.rs` (clap Commands) |
 | **witslog-ffi** | C ABI for embedding | `lib.rs` (witslog_log, witslog_resolve, witslog_delete) |
 
-**Not yet built**: witslog-query (FTS + aggregates), witslog-mcp (server), witslog-plugin (extensibility).
+**Not yet built**: witslog-plugin (extensibility, P9).
 
 ## Specs & Docs
 
 - **PLAN.md**: Authoritative design doc. Architecture, schema (§3), FTS design (§4), MCP spec (§5), crate map (§6), install/bootstrap (§7), roadmap (§8-10). Read first for "how should X work".
-- **PHASES.md**: Detailed per-phase engineering. Each phase has EARS requirements, acceptance criteria, error-handling table, TODO checklist, verification recipe. Read before implementing a phase. **Current phase: P2 (taxonomy) — specs at PHASES.md §P2**.
+- **PHASES.md**: Detailed per-phase engineering. Each phase has EARS requirements, acceptance criteria, error-handling table, TODO checklist, verification recipe. Read before implementing a phase. **Current phase: P6 (SDK bindings) — specs at PHASES.md §P6**.
 - **LAST_SESSION_PLAN.md** (if present): Refined implementation plan from prior session. May be more detailed than PHASES.md for the current phase.
 
 ## Conventions
@@ -60,11 +62,11 @@ Workspace in `crates/`. Built crates:
 
 - ✅ **P0** (M1): Storage + event model, init/log/query/resolve/delete, migrations 1-3, FFI-core.
 - 🟡 **P1**: Logging lib (enrich/redact/buffer) — core shipped, config sections added, buffer/enrich partially wired.
-- ✅ **P2** (current): Taxonomy engine — builtin tree seeded, classifier rules, auto-classify wired into builder, migration 4, store CRUD, config section, integration tests.
-- ⬜ **P3**: FTS5 + query engine (search/stats/timeline).
-- ⬜ **P4**: CLI ops (export/import/prune/migrate/backup).
-- ⬜ **P5**: MCP server (tools over JSON-RPC).
-- ⬜ **P6**: SDK bindings (Python, Node).
+- ✅ **P2**: Taxonomy engine — builtin tree seeded, classifier rules, auto-classify wired into builder, migration 4, store CRUD, config section, integration tests.
+- ✅ **P3**: FTS5 + query engine — migrate_0005_fts5 shipped, witslog-query crate (search/aggregates/filters/correlate), p3_integration tests.
+- 🟡 **P4**: CLI ops — query/stats/export/import/vacuum/prune/migrate/config/archive/backup/list-dbs/category all shipped; missing global `--json` flag.
+- ✅ **P5**: MCP server — witslog-mcp crate (all 12 tools, JSON-RPC stdio transport, schema validation, statement timeout), wired into CLI as `witslog serve-mcp [--stdio] [--attach] [--allow-write]`, conformance test (`p5_integration.rs`) green.
+- ⬜ **P6** (current): SDK bindings (Python, Node).
 - ⬜ **P7**: Perf + hardening (benches, concurrency).
 - ⬜ **P8**: Packaging + install (cross-compile, release).
 - ⬜ **P9**: Extensibility + security (plugins, encryption, audit).
@@ -73,9 +75,8 @@ Workspace in `crates/`. Built crates:
 
 ## Next Steps
 
-1. **P3**: FTS5 migration (migrate_0005), query engine crate, bm25 ranking, keyset pagination.
-2. **P4**: CLI query/stats/export/import subcommands.
-3. **P5**: MCP server.
+1. **P4**: add global `--json` output flag.
+2. **P6**: SDK bindings (Python, Node) over the C ABI.
 
 ## Dev Workflow
 
@@ -106,8 +107,9 @@ Workspace in `crates/`. Built crates:
 - **Tags are merged in classify()**: suggested tags from rule appended to existing tags, not replaced.
 - **Auto-classify respects explicit category**: if `EventBuilder.category(...)` already set, `.classify()` skips classification.
 - **Redaction is applied pre-build**: message/exception/stacktrace/context/metadata all redacted in `.redact()`.
-- **No FTS yet**: P3 will add; for now schema has `events_fts` placeholder, not yet triggered.
+- **FTS5 live**: `events_fts` created + triggered by `migrate_0005_fts5`; query via `witslog-query::SearchEngine`.
+- **P5 wiring merged 2026-07-12**: the agent worktree that had `serve-mcp` CLI wiring was committed and fast-forward merged into `feat/P5-MCP-tooling`, then removed — no longer a separate worktree.
 
 ---
 
-Last updated: 2026-07-11. Reflect code reality, not aspirational state.
+Last updated: 2026-07-12. Reflect code reality, not aspirational state.

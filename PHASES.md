@@ -256,7 +256,7 @@ raw errors — without any model or embedding.
 with bm25 ranking + keyset pagination, plus analytics aggregates. Unlocks P4 CLI
 `query`/`stats` and P5 MCP tools.
 
-**Status.** ⬜ todo. FTS table not created; no query crate.
+**Status.** ✅ done. `migrate_0005_fts5` (idempotent, backfills existing rows) + `events_ai`/`events_ad` triggers shipped in `migrate.rs`. `witslog-query` crate built: `search.rs` (bm25 + keyset cursor), `filters.rs`, `aggregates.rs` (stats/timeline/top_failures), `correlate.rs` (edge walks). `p3_integration.rs` covers it. Wired into CLI `query`/`stats` (P4).
 **Dependencies.** P0 (schema/writer). Blocks P4, P5.
 **Complexity.** L.
 
@@ -330,9 +330,10 @@ returns ranked page + cursor and correct aggregate counts. Full CLI surface arri
 **Objective.** Expose the query engine and operational tooling through the CLI so a human
 can search, summarise, and maintain a project's log without writing code.
 
-**Status.** 🟡 partial. `init/log/query(by-id)/resolve/delete/doctor` shipped (P0);
-search-`query`, `stats`, `export/import`, `vacuum`, policy `prune`, `migrate`, `config`,
-`archive`, `backup`, `list-dbs` remain.
+**Status.** 🟡 partial. `init/log/get/resolve/delete/doctor` (P0) + search-`query`, `stats`,
+`export/import`, `vacuum`, `prune`, `migrate`, `config`, `archive`, `backup`, `list-dbs`,
+`category` all shipped and wired to `witslog-query`/`witslog-store`. Remaining: global
+`--json` output flag (FR-P4-011) not implemented on any command.
 
 **Dependencies.** P3 (query engine) for `query`/`stats`. P0 for ops commands.
 **Complexity.** M.
@@ -407,7 +408,15 @@ search-`query`, `stats`, `export/import`, `vacuum`, policy `prune`, `migrate`, `
 tools over JSON-RPC, provider-independent, so assistants can search/summarise/classify/
 correlate failures in a project.
 
-**Status.** ⬜ todo. No `witslog-mcp` crate.
+**Status.** ✅ done. `witslog-mcp` crate: `registry.rs` dispatches all 12 tools
+(`search_errors`, `latest_errors`, `summarize_errors`, `statistics`, `classify_error`,
+`explain_error`, `similar_errors`, `list_categories`, `timeline`, `top_failures`,
+`list_traces`, `search_all`, `witslog_delete`) against `witslog-query`/`witslog-core`,
+JSON-Schema-validates params first (`schema.rs`), `transport.rs` does line-delimited stdio
+JSON-RPC framing, `server.rs` runs the loop with a per-call statement timeout on read
+connections. Wired into the CLI as `witslog serve-mcp [--stdio] [--attach PATH...]
+[--allow-write]`. `tests/p5_integration.rs` drives `tools/list` + one call per tool over the
+real framing.
 **Dependencies.** P3 (query engine), P2 (`classify_error`/`list_categories`). Blocks P8 docs.
 **Complexity.** L.
 
