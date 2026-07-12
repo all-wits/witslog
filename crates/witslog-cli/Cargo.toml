@@ -14,6 +14,7 @@ witslog-core = { path = "../witslog-core" }
 witslog-store = { path = "../witslog-store" }
 witslog-config = { path = "../witslog-config" }
 witslog-query = { path = "../witslog-query" }
+witslog-mcp = { path = "../witslog-mcp" }
 clap.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

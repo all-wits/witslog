@@ -169,7 +169,7 @@ impl<'a> SearchEngine<'a> {
             let last = &items[items.len() - 1];
             Some(Cursor {
                 ts_epoch_ms: last.timestamp.timestamp_millis(),
-                id: 0, // Will use rowid from events.id.
+                id: last.id,
             }.encode())
         } else {
             None
@@ -224,6 +224,7 @@ impl<'a> SearchEngine<'a> {
             });
 
         Ok(Event {
+            id: row.get(0)?,
             event_id: row.get(1)?,
             timestamp: ts,
             application: row.get(4)?,

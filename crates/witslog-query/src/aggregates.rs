@@ -30,6 +30,17 @@ pub struct TopFailure {
     pub sample_event_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FingerprintStats {
+    pub fingerprint: String,
+    pub title: String,
+    pub count: usize,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub category: Option<String>,
+    pub sample_event_id: String,
+}
+
 pub struct AggregateEngine<'a> {
     conn: &'a Connection,
 }
@@ -37,6 +48,32 @@ pub struct AggregateEngine<'a> {
 impl<'a> AggregateEngine<'a> {
     pub fn new(conn: &'a Connection) -> Self {
         AggregateEngine { conn }
+    }
+
+    /// Recurrence stats for a single fingerprint (used by `explain_error`).
+    pub fn fingerprint_stats(&self, fingerprint: &str) -> Result<Option<FingerprintStats>> {
+        let result = self.conn.query_row(
+            "SELECT fingerprint, title, count, first_seen, last_seen, category, sample_event_id
+             FROM fingerprints WHERE fingerprint = ?1",
+            [fingerprint],
+            |row| {
+                Ok(FingerprintStats {
+                    fingerprint: row.get(0)?,
+                    title: row.get(1)?,
+                    count: row.get(2)?,
+                    first_seen: row.get(3)?,
+                    last_seen: row.get(4)?,
+                    category: row.get(5)?,
+                    sample_event_id: row.get(6)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(stats) => Ok(Some(stats)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn statistics(&self, filters: &Filters) -> Result<Statistics> {

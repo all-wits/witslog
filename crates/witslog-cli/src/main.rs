@@ -111,6 +111,20 @@ enum Commands {
         #[command(subcommand)]
         action: CategoryAction,
     },
+    /// Run an MCP (Model Context Protocol) server over stdio (P5).
+    ServeMcp {
+        /// Serve over stdio (currently the only supported transport; kept
+        /// explicit so future `--http` doesn't silently change defaults).
+        #[arg(long)]
+        stdio: bool,
+        /// Additional project DBs to attach for the opt-in `search_all` tool.
+        #[arg(long)]
+        attach: Vec<PathBuf>,
+        /// Enable the write-capable `witslog_delete` tool. Off by default —
+        /// the server is otherwise strictly read-only (FR-P5-005).
+        #[arg(long)]
+        allow_write: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -218,6 +232,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Category { action } => {
             cmd_category(&cli.db, action)?;
+        }
+        Commands::ServeMcp {
+            stdio: _,
+            attach,
+            allow_write,
+        } => {
+            cmd_serve_mcp(&cli.db, attach, allow_write)?;
         }
     }
 
@@ -981,6 +1002,43 @@ fn cmd_list_dbs() -> Result<(), Box<dyn std::error::Error>> {
     if !found {
         println!("  (none found)");
     }
+
+    Ok(())
+}
+
+fn cmd_serve_mcp(
+    db_override: &Option<PathBuf>,
+    attach: Vec<PathBuf>,
+    allow_write: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    if !db_path.exists() {
+        return Err(format!(
+            "no witslog DB found at {} (run `witslog init` first)",
+            db_path.display()
+        )
+        .into());
+    }
+
+    // Read-only by construction unless --allow-write (FR-P5-005). The write
+    // path (witslog_delete) needs a writable handle, so open read-write only
+    // when explicitly requested.
+    let db = if allow_write {
+        witslog_store::DbConnection::open(&db_path)?
+    } else {
+        witslog_store::DbConnection::open_read_only(&db_path)?
+    };
+
+    let mcp_config = witslog_mcp::ServerConfig {
+        allow_write,
+        attached: attach,
+        statement_timeout: witslog_mcp::server::DEFAULT_STATEMENT_TIMEOUT,
+    };
+
+    witslog_mcp::serve_stdio(&db, mcp_config)?;
 
     Ok(())
 }

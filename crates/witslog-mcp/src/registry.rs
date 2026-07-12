@@ -1,33 +1,102 @@
 use crate::error::{McpError, Result};
+use crate::schema;
 use crate::tools::Tool;
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use witslog_query::{AggregateEngine, Filters, SearchEngine};
+use witslog_query::{AggregateEngine, CorrelationEngine, Filters, SearchEngine};
+use witslog_store::{DbConnection, DeleteFilter, EventWriter};
 
+/// Dispatches MCP tool calls against a single project DB.
+///
+/// Read-only by construction unless `allow_write` is set, in which case
+/// `witslog_delete` becomes callable (it still only ever deletes resolved
+/// events unless `force:true` is passed). `attached` enables `search_all`
+/// across those extra DB paths.
 pub struct ToolRegistry<'a> {
-    conn: &'a Connection,
+    db: &'a DbConnection,
+    allow_write: bool,
+    attached: Vec<std::path::PathBuf>,
 }
 
 impl<'a> ToolRegistry<'a> {
-    pub fn new(conn: &'a Connection) -> Self {
-        ToolRegistry { conn }
+    pub fn new(db: &'a DbConnection) -> Self {
+        ToolRegistry {
+            db,
+            allow_write: false,
+            attached: Vec::new(),
+        }
     }
 
-    /// List all available tools.
+    pub fn with_allow_write(mut self, allow_write: bool) -> Self {
+        self.allow_write = allow_write;
+        self
+    }
+
+    pub fn with_attached(mut self, attached: Vec<std::path::PathBuf>) -> Self {
+        self.attached = attached;
+        self
+    }
+
+    /// List all available tools — `search_all` only when DBs are attached,
+    /// `witslog_delete` only when write is allowed.
     pub fn list_tools(&self) -> Vec<Tool> {
-        Tool::builtin_tools()
+        let mut tools = Tool::builtin_tools();
+        if !self.attached.is_empty() {
+            tools.push(Tool::search_all_tool());
+        }
+        if self.allow_write {
+            tools.push(Tool::witslog_delete_tool());
+        }
+        tools
     }
 
-    /// Call a tool by name with params.
+    /// Call a tool by name with params. Validates params against the tool's
+    /// JSON Schema first (FR-P5-003) before dispatching.
     pub fn call_tool(&self, name: &str, params: Value) -> Result<Value> {
+        let tool = self
+            .list_tools()
+            .into_iter()
+            .find(|t| t.name == name)
+            .ok_or_else(|| McpError::MethodNotFound(name.to_string()))?;
+
+        schema::validate(&tool.input_schema, &params).map_err(McpError::InvalidParams)?;
+
         match name {
             "search_errors" => self.search_errors(params),
             "latest_errors" => self.latest_errors(params),
+            "summarize_errors" => self.summarize_errors(params),
             "statistics" => self.statistics(params),
             "classify_error" => self.classify_error(params),
+            "explain_error" => self.explain_error(params),
+            "similar_errors" => self.similar_errors(params),
             "list_categories" => self.list_categories(params),
+            "timeline" => self.timeline(params),
             "top_failures" => self.top_failures(params),
+            "list_traces" => self.list_traces(params),
+            "search_all" => self.search_all(params),
+            "witslog_delete" => self.witslog_delete(params),
             _ => Err(McpError::MethodNotFound(name.to_string())),
+        }
+    }
+
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.db.conn()
+    }
+
+    fn common_filters(&self, params: &Value) -> Filters {
+        let application = str_field(params, "application");
+        let category = str_field(params, "category");
+        let severity_min = str_field(params, "severity_min");
+        let from = str_field(params, "from").and_then(|s| parse_time(&s));
+        let to = str_field(params, "to").and_then(|s| parse_time(&s));
+
+        Filters {
+            application,
+            category,
+            severity_min,
+            from,
+            to,
+            ..Default::default()
         }
     }
 
@@ -37,40 +106,20 @@ impl<'a> ToolRegistry<'a> {
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError::InvalidParams("missing 'query'".to_string()))?;
 
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(20)
-            .min(200) as usize;
+        let limit = limit_field(&params, "limit", 20, 200);
+        let cursor = str_field(&params, "cursor");
+        let order_by_rank = str_field(&params, "order").as_deref() != Some("time");
 
-        let cursor = params.get("cursor").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let filters = self.common_filters(&params);
 
-        let application = params.get("application").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let severity_min = params.get("severity_min").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let category = params.get("category").and_then(|v| v.as_str()).map(|s| s.to_string());
-
-        let filters = Filters {
-            application,
-            category,
-            severity_min,
-            ..Default::default()
-        };
-
-        let search = SearchEngine::new(&self.conn);
-        let result = search.search(query, &filters, limit, cursor, true)
+        let conn = self.conn();
+        let search = SearchEngine::new(&conn);
+        let result = search
+            .search(query, &filters, limit, cursor, order_by_rank)
             .map_err(|e| McpError::QueryError(e.to_string()))?;
 
         Ok(json!({
-            "items": result.items.iter().map(|e| {
-                json!({
-                    "event_id": e.event_id,
-                    "application": e.application,
-                    "message": e.message,
-                    "severity": e.severity.as_str(),
-                    "timestamp": e.timestamp,
-                    "category": e.category
-                })
-            }).collect::<Vec<_>>(),
+            "items": result.items.iter().map(event_summary).collect::<Vec<_>>(),
             "next_cursor": result.next_cursor,
             "total_estimate": result.total_estimate,
             "cursor_warning": result.cursor_warning
@@ -78,44 +127,57 @@ impl<'a> ToolRegistry<'a> {
     }
 
     fn latest_errors(&self, params: Value) -> Result<Value> {
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(20)
-            .min(200) as usize;
+        let limit = limit_field(&params, "limit", 20, 200);
+        let cursor = str_field(&params, "cursor");
+        let filters = self.common_filters(&params);
 
-        let filters = Filters::default();
-        let search = SearchEngine::new(&self.conn);
+        let conn = self.conn();
+        let search = SearchEngine::new(&conn);
 
-        // Use "1=1" query to match all
-        let result = search.search("*", &filters, limit, None, false)
+        // Use "*" to match all — filters + time ordering do the real work.
+        let result = search
+            .search("*", &filters, limit, cursor, false)
             .map_err(|e| McpError::QueryError(e.to_string()))?;
 
         Ok(json!({
-            "items": result.items.iter().map(|e| {
-                json!({
-                    "event_id": e.event_id,
-                    "application": e.application,
-                    "message": e.message,
-                    "severity": e.severity.as_str(),
-                    "timestamp": e.timestamp
-                })
-            }).collect::<Vec<_>>()
+            "items": result.items.iter().map(event_summary).collect::<Vec<_>>(),
+            "next_cursor": result.next_cursor
+        }))
+    }
+
+    fn summarize_errors(&self, params: Value) -> Result<Value> {
+        let filters = self.common_filters(&params);
+
+        let conn = self.conn();
+        let agg = AggregateEngine::new(&conn);
+        let stats = agg
+            .statistics(&filters)
+            .map_err(|e| McpError::QueryError(e.to_string()))?;
+        let top = agg
+            .top_failures(&filters, "count", 10)
+            .map_err(|e| McpError::QueryError(e.to_string()))?;
+
+        Ok(json!({
+            "total": stats.total,
+            "by_group": {
+                "category": stats.by_category,
+                "severity": stats.by_severity,
+            },
+            "top_fingerprints": top.iter().map(|f| json!({
+                "fingerprint": f.fingerprint,
+                "count": f.count,
+                "last_seen": f.last_seen
+            })).collect::<Vec<_>>()
         }))
     }
 
     fn statistics(&self, params: Value) -> Result<Value> {
-        let application = params.get("application").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let severity_min = params.get("severity_min").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let filters = self.common_filters(&params);
 
-        let filters = Filters {
-            application,
-            severity_min,
-            ..Default::default()
-        };
-
-        let agg = AggregateEngine::new(&self.conn);
-        let stats = agg.statistics(&filters)
+        let conn = self.conn();
+        let agg = AggregateEngine::new(&conn);
+        let stats = agg
+            .statistics(&filters)
             .map_err(|e| McpError::QueryError(e.to_string()))?;
 
         Ok(json!({
@@ -123,7 +185,8 @@ impl<'a> ToolRegistry<'a> {
             "by_severity": stats.by_severity,
             "by_category": stats.by_category,
             "error_rate_per_day": stats.error_rate_per_day,
-            "unique_fingerprints": stats.unique_fingerprints
+            "unique_fingerprints": stats.unique_fingerprints,
+            "top_hosts": stats.top_hosts
         }))
     }
 
@@ -146,41 +209,132 @@ impl<'a> ToolRegistry<'a> {
         }))
     }
 
-    fn list_categories(&self, _params: Value) -> Result<Value> {
-        let mut stmt = self.conn.prepare(
-            "SELECT canonical, label, parent FROM categories ORDER BY canonical"
-        ).map_err(|e| McpError::DbError(e.to_string()))?;
+    fn explain_error(&self, params: Value) -> Result<Value> {
+        let event_id = self.resolve_event_id(&params)?;
 
-        let categories = stmt.query_map([], |row| {
-            Ok(json!({
-                "canonical": row.get::<_, String>(0)?,
-                "label": row.get::<_, Option<String>>(1)?,
-                "parent": row.get::<_, Option<String>>(2)?
-            }))
-        }).map_err(|e| McpError::DbError(e.to_string()))?
+        let conn = self.conn();
+        let corr = CorrelationEngine::new(&conn);
+        let trace = corr
+            .by_root_event_id(&event_id)
+            .map_err(|e| McpError::QueryError(e.to_string()))?;
+
+        let event = trace
+            .ordered_events
+            .iter()
+            .find(|e| e.event_id == event_id)
+            .cloned()
+            .ok_or_else(|| McpError::InvalidParams("event not found".to_string()))?;
+
+        let agg = AggregateEngine::new(&conn);
+        let recurrence = agg
+            .fingerprint_stats(&event.fingerprint)
+            .map_err(|e| McpError::QueryError(e.to_string()))?;
+
+        let root_cause = trace
+            .ordered_events
+            .iter()
+            .find(|e| e.parent_event_id.is_none())
+            .map(event_summary);
+
+        Ok(json!({
+            "event": event_summary(&event),
+            "root_cause": root_cause,
+            "chain": trace.ordered_events.iter().map(event_summary).collect::<Vec<_>>(),
+            "edges": trace.edges.iter().map(|e| json!({
+                "src_event_id": e.src_event_id,
+                "dst_event_id": e.dst_event_id,
+                "rel": e.rel
+            })).collect::<Vec<_>>(),
+            "recurrence": recurrence.as_ref().map(|r| json!({
+                "count": r.count,
+                "first_seen": r.first_seen,
+                "last_seen": r.last_seen
+            })),
+            "category_path": event.category,
+            "context": event.context
+        }))
+    }
+
+    fn similar_errors(&self, params: Value) -> Result<Value> {
+        let event_id = self.resolve_event_id(&params)?;
+        let mode = str_field(&params, "mode").unwrap_or_else(|| "fingerprint".to_string());
+        let limit = limit_field(&params, "limit", 20, 200);
+
+        let source = EventWriter::new(self.db)
+            .query_by_id(&event_id)
+            .map_err(|e| McpError::DbError(e.to_string()))?
+            .ok_or_else(|| McpError::InvalidParams("event not found".to_string()))?;
+
+        let conn = self.conn();
+        let search = SearchEngine::new(&conn);
+        let result = if mode == "lexical" {
+            search
+                .search(&fts_safe(&source.message), &Filters::default(), limit, None, true)
+                .map_err(|e| McpError::QueryError(e.to_string()))?
+        } else {
+            let filters = Filters {
+                fingerprint: Some(source.fingerprint.clone()),
+                ..Default::default()
+            };
+            search
+                .search("*", &filters, limit, None, false)
+                .map_err(|e| McpError::QueryError(e.to_string()))?
+        };
+
+        Ok(json!({
+            "items": result.items.iter().filter(|e| e.event_id != event_id).map(event_summary).collect::<Vec<_>>(),
+            "grouping": mode
+        }))
+    }
+
+    fn list_categories(&self, _params: Value) -> Result<Value> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT canonical, label, parent FROM categories ORDER BY canonical")
+            .map_err(|e| McpError::DbError(e.to_string()))?;
+
+        let categories = stmt
+            .query_map([], |row| {
+                Ok(json!({
+                    "canonical": row.get::<_, String>(0)?,
+                    "label": row.get::<_, Option<String>>(1)?,
+                    "parent": row.get::<_, Option<String>>(2)?
+                }))
+            })
+            .map_err(|e| McpError::DbError(e.to_string()))?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| McpError::DbError(e.to_string()))?;
 
         Ok(json!({
-            "categories": categories
+            "tree": categories,
+            "aliases": []
+        }))
+    }
+
+    fn timeline(&self, params: Value) -> Result<Value> {
+        let bucket = str_field(&params, "bucket").unwrap_or_else(|| "day".to_string());
+        let filters = self.common_filters(&params);
+
+        let conn = self.conn();
+        let agg = AggregateEngine::new(&conn);
+        let buckets = agg
+            .timeline(&filters, &bucket)
+            .map_err(|e| McpError::QueryError(e.to_string()))?;
+
+        Ok(json!({
+            "buckets": buckets.iter().map(|b| json!({"t": b.timestamp, "count": b.count})).collect::<Vec<_>>()
         }))
     }
 
     fn top_failures(&self, params: Value) -> Result<Value> {
-        let by = params
-            .get("by")
-            .and_then(|v| v.as_str())
-            .unwrap_or("count");
-
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10)
-            .min(100) as usize;
+        let by = str_field(&params, "by").unwrap_or_else(|| "count".to_string());
+        let limit = limit_field(&params, "limit", 10, 100);
 
         let filters = Filters::default();
-        let agg = AggregateEngine::new(&self.conn);
-        let results = agg.top_failures(&filters, by, limit)
+        let conn = self.conn();
+        let agg = AggregateEngine::new(&conn);
+        let results = agg
+            .top_failures(&filters, &by, limit)
             .map_err(|e| McpError::QueryError(e.to_string()))?;
 
         Ok(json!({
@@ -190,21 +344,272 @@ impl<'a> ToolRegistry<'a> {
                     "title": f.title,
                     "count": f.count,
                     "last_seen": f.last_seen,
-                    "category": f.category
+                    "category": f.category,
+                    "sample_event_id": f.sample_event_id
                 })
             }).collect::<Vec<_>>()
         }))
     }
+
+    fn list_traces(&self, params: Value) -> Result<Value> {
+        let correlation_id = str_field(&params, "correlation_id");
+        let root_event_id = str_field(&params, "root_event_id");
+
+        if correlation_id.is_none() && root_event_id.is_none() {
+            return Err(McpError::InvalidParams(
+                "one of 'correlation_id' or 'root_event_id' is required".to_string(),
+            ));
+        }
+
+        let conn = self.conn();
+        let corr = CorrelationEngine::new(&conn);
+
+        let trace = if let Some(cid) = correlation_id {
+            corr.by_correlation_id(&cid)
+        } else {
+            corr.by_root_event_id(&root_event_id.unwrap())
+        }
+        .map_err(|e| McpError::QueryError(e.to_string()))?;
+
+        Ok(json!({
+            "ordered_events": trace.ordered_events.iter().map(event_summary).collect::<Vec<_>>(),
+            "edges": trace.edges.iter().map(|e| json!({
+                "src_event_id": e.src_event_id,
+                "dst_event_id": e.dst_event_id,
+                "rel": e.rel
+            })).collect::<Vec<_>>()
+        }))
+    }
+
+    fn search_all(&self, params: Value) -> Result<Value> {
+        if self.attached.is_empty() {
+            return Err(McpError::MethodNotFound("search_all".to_string()));
+        }
+
+        let query = params
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError::InvalidParams("missing 'query'".to_string()))?;
+        let limit = limit_field(&params, "limit", 20, 200);
+
+        let mut items = Vec::new();
+        let mut by_project = Vec::new();
+
+        // Query the primary DB first.
+        {
+            let conn = self.conn();
+            let search = SearchEngine::new(&conn);
+            if let Ok(result) = search.search(query, &Filters::default(), limit, None, true) {
+                by_project.push(json!({"source_db": "primary", "count": result.items.len()}));
+                for e in &result.items {
+                    let mut v = event_summary(e);
+                    v["source_db"] = json!("primary");
+                    items.push(v);
+                }
+            }
+        }
+
+        // Each attached DB is opened read-only, queried independently, and
+        // closed — avoids holding N connections open for the server's
+        // lifetime and keeps failures in one DB from poisoning the rest.
+        for path in &self.attached {
+            let label = path.display().to_string();
+            let opened = Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            );
+            let Ok(conn) = opened else {
+                by_project.push(json!({"source_db": label, "error": "could not open"}));
+                continue;
+            };
+            let search = SearchEngine::new(&conn);
+            match search.search(query, &Filters::default(), limit, None, true) {
+                Ok(result) => {
+                    by_project.push(json!({"source_db": label, "count": result.items.len()}));
+                    for e in &result.items {
+                        let mut v = event_summary(e);
+                        v["source_db"] = json!(label.clone());
+                        items.push(v);
+                    }
+                }
+                Err(_) => {
+                    by_project.push(json!({"source_db": label, "error": "query failed"}));
+                }
+            }
+        }
+
+        Ok(json!({
+            "items": items,
+            "by_project": by_project
+        }))
+    }
+
+    fn witslog_delete(&self, params: Value) -> Result<Value> {
+        if !self.allow_write {
+            return Err(McpError::MethodNotFound("witslog_delete".to_string()));
+        }
+
+        let event_id = str_field(&params, "event_id");
+        let fingerprint = str_field(&params, "fingerprint");
+        let resolved_before = str_field(&params, "resolved_before");
+        let force = params
+            .get("force")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let dry_run = params
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        if event_id.is_none() && fingerprint.is_none() && resolved_before.is_none() {
+            return Err(McpError::InvalidParams(
+                "one of 'event_id', 'fingerprint', or 'resolved_before' is required".to_string(),
+            ));
+        }
+
+        let filter = DeleteFilter {
+            event_id,
+            fingerprint,
+            resolved_before,
+            force,
+        };
+
+        if dry_run {
+            let preview = self.preview_delete(&filter)?;
+            return Ok(json!({
+                "deleted_count": 0,
+                "deleted_ids": [],
+                "would_delete_count": preview.len(),
+                "would_delete_ids": preview,
+                "dry_run": true
+            }));
+        }
+
+        let writer = EventWriter::new(self.db);
+        let ids = writer
+            .delete_resolved(&filter)
+            .map_err(|e| McpError::DbError(e.to_string()))?;
+
+        Ok(json!({
+            "deleted_count": ids.len(),
+            "deleted_ids": ids,
+            "dry_run": false
+        }))
+    }
+
+    /// Read-only preview of what `delete_resolved` would delete, mirroring
+    /// its WHERE clause exactly without mutating anything.
+    fn preview_delete(&self, filter: &DeleteFilter) -> Result<Vec<String>> {
+        let conn = self.conn();
+
+        let mut clauses: Vec<String> = vec!["resolved_at IS NOT NULL".to_string()];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if filter.force {
+            clauses[0] = "1=1".to_string();
+        }
+        if let Some(event_id) = &filter.event_id {
+            clauses.push(format!("event_id = ?{}", params.len() + 1));
+            params.push(Box::new(event_id.clone()));
+        }
+        if let Some(fingerprint) = &filter.fingerprint {
+            clauses.push(format!("fingerprint = ?{}", params.len() + 1));
+            params.push(Box::new(fingerprint.clone()));
+        }
+        if let Some(resolved_before) = &filter.resolved_before {
+            clauses.push(format!("resolved_at <= ?{}", params.len() + 1));
+            params.push(Box::new(resolved_before.clone()));
+        }
+
+        let sql = format!("SELECT event_id FROM events WHERE {}", clauses.join(" AND "));
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| McpError::DbError(e.to_string()))?;
+        let ids = stmt
+            .query_map(param_refs.as_slice(), |row| row.get::<_, String>(0))
+            .map_err(|e| McpError::DbError(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(|e| McpError::DbError(e.to_string()))?;
+
+        Ok(ids)
+    }
+
+    /// Resolve `event_id`/`fingerprint` params to a concrete `event_id`,
+    /// used by `explain_error` and `similar_errors`.
+    fn resolve_event_id(&self, params: &Value) -> Result<String> {
+        if let Some(id) = str_field(params, "event_id") {
+            return Ok(id);
+        }
+        if let Some(fp) = str_field(params, "fingerprint") {
+            let conn = self.conn();
+            let agg = AggregateEngine::new(&conn);
+            let stats = agg
+                .fingerprint_stats(&fp)
+                .map_err(|e| McpError::QueryError(e.to_string()))?
+                .ok_or_else(|| McpError::InvalidParams("unknown fingerprint".to_string()))?;
+            return Ok(stats.sample_event_id);
+        }
+        Err(McpError::InvalidParams(
+            "one of 'event_id' or 'fingerprint' is required".to_string(),
+        ))
+    }
+}
+
+fn event_summary(e: &witslog_core::Event) -> Value {
+    json!({
+        "event_id": e.event_id,
+        "application": e.application,
+        "message": e.message,
+        "severity": e.severity.as_str(),
+        "timestamp": e.timestamp,
+        "category": e.category,
+        "fingerprint": e.fingerprint,
+        "correlation_id": e.correlation_id,
+        "parent_event_id": e.parent_event_id,
+        "resolved_at": e.resolved_at
+    })
+}
+
+fn str_field(params: &Value, key: &str) -> Option<String> {
+    params.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+fn limit_field(params: &Value, key: &str, default: usize, max: usize) -> usize {
+    params
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(default)
+        .min(max)
+}
+
+fn parse_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
+/// Escape an arbitrary message for use as an FTS5 MATCH query: wrap in
+/// double quotes as a phrase and escape embedded quotes, so punctuation in
+/// the source message can't be interpreted as FTS syntax.
+fn fts_safe(message: &str) -> String {
+    format!("\"{}\"", message.replace('"', "\"\""))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn setup() -> DbConnection {
+        let db = DbConnection::open(":memory:").unwrap();
+        db.migrate().unwrap();
+        db
+    }
+
     #[test]
     fn classify_error_uses_error_code_not_stacktrace_slot() {
-        let conn = Connection::open_in_memory().unwrap();
-        let registry = ToolRegistry::new(&conn);
+        let db = setup();
+        let registry = ToolRegistry::new(&db);
 
         let result = registry
             .call_tool("classify_error", json!({"message": "boom", "error_code": "ETIMEDOUT"}))
@@ -216,13 +621,51 @@ mod tests {
 
     #[test]
     fn classify_error_no_match_returns_null_category() {
-        let conn = Connection::open_in_memory().unwrap();
-        let registry = ToolRegistry::new(&conn);
+        let db = setup();
+        let registry = ToolRegistry::new(&db);
 
         let result = registry
             .call_tool("classify_error", json!({"message": "something weird"}))
             .unwrap();
 
         assert!(result["category"].is_null());
+    }
+
+    #[test]
+    fn invalid_params_rejected_before_dispatch() {
+        let db = setup();
+        let registry = ToolRegistry::new(&db);
+
+        let err = registry.call_tool("classify_error", json!({})).unwrap_err();
+        match err {
+            McpError::InvalidParams(detail) => assert!(detail.contains("message")),
+            other => panic!("expected InvalidParams, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn witslog_delete_absent_without_allow_write() {
+        let db = setup();
+        let registry = ToolRegistry::new(&db);
+
+        assert!(!registry.list_tools().iter().any(|t| t.name == "witslog_delete"));
+
+        let err = registry.call_tool("witslog_delete", json!({"event_id": "x"})).unwrap_err();
+        assert!(matches!(err, McpError::MethodNotFound(_)));
+    }
+
+    #[test]
+    fn witslog_delete_present_with_allow_write() {
+        let db = setup();
+        let registry = ToolRegistry::new(&db).with_allow_write(true);
+
+        assert!(registry.list_tools().iter().any(|t| t.name == "witslog_delete"));
+    }
+
+    #[test]
+    fn search_all_absent_without_attach() {
+        let db = setup();
+        let registry = ToolRegistry::new(&db);
+        assert!(!registry.list_tools().iter().any(|t| t.name == "search_all"));
     }
 }

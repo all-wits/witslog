@@ -39,6 +39,44 @@ impl DbConnection {
         Ok(())
     }
 
+    /// Open an existing DB read-only (FR-P5-005). Never creates the file —
+    /// the path must already exist. Used by `witslog serve-mcp` unless
+    /// `--allow-write` is passed.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+
+        let conn = Connection::open_with_flags(path, flags)?;
+
+        // A subset of pragmas apply to read-only connections; harmless
+        // no-ops otherwise (WAL mode is set once by whoever created the DB).
+        conn.execute_batch(
+            r#"
+            PRAGMA busy_timeout = 5000;
+            PRAGMA temp_store = MEMORY;
+            "#,
+        )?;
+
+        Ok(DbConnection {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// Install a per-call statement timeout (FR-P5-007): SQLite invokes the
+    /// progress handler periodically while executing; once `timeout` has
+    /// elapsed we return non-zero, which aborts the running statement with
+    /// `SQLITE_INTERRUPT`.
+    pub fn set_statement_timeout(&self, timeout: std::time::Duration) {
+        let conn = self.conn();
+        let deadline = std::time::Instant::now() + timeout;
+        conn.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline));
+    }
+
+    /// Remove any previously installed progress handler.
+    pub fn clear_statement_timeout(&self) {
+        let conn = self.conn();
+        conn.progress_handler(0, None::<fn() -> bool>);
+    }
+
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap()
     }

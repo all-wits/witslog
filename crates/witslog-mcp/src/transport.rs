@@ -15,10 +15,19 @@ impl JsonRpcTransport {
     }
 
     /// Read a JSON-RPC 2.0 request from stdin (line-delimited JSON).
-    pub fn read_request(&mut self) -> std::io::Result<Value> {
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        Ok(serde_json::from_str(&line)?)
+    /// Returns `Ok(None)` at EOF (stdin closed). Blank lines are skipped.
+    pub fn read_request(&mut self) -> std::io::Result<Option<Value>> {
+        loop {
+            let mut line = String::new();
+            let n = self.reader.read_line(&mut line)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            return Ok(Some(serde_json::from_str(&line)?));
+        }
     }
 
     /// Write a JSON-RPC 2.0 response to stdout.

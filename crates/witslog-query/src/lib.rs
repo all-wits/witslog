@@ -7,5 +7,5 @@ pub mod correlate;
 pub use error::{QueryError, Result};
 pub use filters::Filters;
 pub use search::{SearchEngine, SearchResult, Cursor};
-pub use aggregates::{AggregateEngine, Statistics, TimelineBucket, TopFailure};
+pub use aggregates::{AggregateEngine, FingerprintStats, Statistics, TimelineBucket, TopFailure};
 pub use correlate::{CorrelationEngine, TraceResult, Edge};

@@ -34,6 +34,10 @@ impl Severity {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Event {
+    /// SQLite rowid (`events.id`). `0` for events not yet persisted/hydrated
+    /// with a rowid (e.g. freshly built by `EventBuilder`).
+    #[serde(default)]
+    pub id: i64,
     pub event_id: String,
     pub timestamp: DateTime<Utc>,
     pub application: String,
@@ -263,6 +267,7 @@ impl EventBuilder {
         }
 
         Event {
+            id: 0,
             event_id: self.event_id,
             timestamp: self.timestamp,
             application: self.application,

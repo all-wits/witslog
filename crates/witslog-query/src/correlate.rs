@@ -30,7 +30,7 @@ impl<'a> CorrelationEngine<'a> {
         let mut events = Vec::new();
 
         let mut stmt = self.conn.prepare(
-            "SELECT event_id, ts, application, version, environment, command, subsystem,
+            "SELECT id, event_id, ts, application, version, environment, command, subsystem,
                     hostname, severity, category, error_code, message, exception,
                     stacktrace, stack_norm, root_cause, fingerprint, correlation_id,
                     parent_event_id, context, tags, metadata, resolved_at
@@ -100,9 +100,9 @@ impl<'a> CorrelationEngine<'a> {
         Ok(TraceResult { ordered_events: events, edges })
     }
 
-    fn fetch_event_by_id(&self, event_id: &str) -> Result<Option<Event>> {
+    pub(crate) fn fetch_event_by_id(&self, event_id: &str) -> Result<Option<Event>> {
         let result = self.conn.query_row(
-            "SELECT event_id, ts, application, version, environment, command, subsystem,
+            "SELECT id, event_id, ts, application, version, environment, command, subsystem,
                     hostname, severity, category, error_code, message, exception,
                     stacktrace, stack_norm, root_cause, fingerprint, correlation_id,
                     parent_event_id, context, tags, metadata, resolved_at
@@ -169,7 +169,7 @@ impl<'a> CorrelationEngine<'a> {
         Ok(edges)
     }
 
-    fn fetch_edges_for_event_id(&self, event_id: &str) -> Result<Vec<Edge>> {
+    pub(crate) fn fetch_edges_for_event_id(&self, event_id: &str) -> Result<Vec<Edge>> {
         let mut stmt = self.conn.prepare(
             "SELECT src_event_id, dst_event_id, rel FROM error_edges
              WHERE src_event_id = ?1 OR dst_event_id = ?1"
@@ -192,20 +192,20 @@ impl<'a> CorrelationEngine<'a> {
     }
 
     fn hydrate_event(&self, row: &rusqlite::Row) -> rusqlite::Result<Event> {
-        let ts_str: String = row.get(1)?;
+        let ts_str: String = row.get(2)?;
         let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
             .ok()
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(|| chrono::Utc::now());
 
-        let context = row.get::<_, Option<String>>(19)?
+        let context = row.get::<_, Option<String>>(20)?
             .and_then(|j| serde_json::from_str(&j).ok());
-        let tags = row.get::<_, Option<String>>(20)?
+        let tags = row.get::<_, Option<String>>(21)?
             .and_then(|j| serde_json::from_str(&j).ok());
-        let metadata = row.get::<_, Option<String>>(21)?
+        let metadata = row.get::<_, Option<String>>(22)?
             .and_then(|j| serde_json::from_str(&j).ok());
 
-        let severity_str: String = row.get(8)?;
+        let severity_str: String = row.get(9)?;
         let severity = match severity_str.as_str() {
             "trace" => witslog_core::Severity::Trace,
             "debug" => witslog_core::Severity::Debug,
@@ -217,7 +217,7 @@ impl<'a> CorrelationEngine<'a> {
             _ => witslog_core::Severity::Error,
         };
 
-        let resolved_at = row.get::<_, Option<String>>(22)?
+        let resolved_at = row.get::<_, Option<String>>(23)?
             .and_then(|s| {
                 chrono::DateTime::parse_from_rfc3339(&s)
                     .ok()
@@ -225,25 +225,26 @@ impl<'a> CorrelationEngine<'a> {
             });
 
         Ok(Event {
-            event_id: row.get(0)?,
+            id: row.get(0)?,
+            event_id: row.get(1)?,
             timestamp: ts,
-            application: row.get(2)?,
-            version: row.get(3)?,
-            environment: row.get(4)?,
-            command: row.get(5)?,
-            subsystem: row.get(6)?,
-            hostname: row.get(7)?,
+            application: row.get(3)?,
+            version: row.get(4)?,
+            environment: row.get(5)?,
+            command: row.get(6)?,
+            subsystem: row.get(7)?,
+            hostname: row.get(8)?,
             severity,
-            category: row.get(9)?,
-            error_code: row.get(10)?,
-            message: row.get(11)?,
-            exception: row.get(12)?,
-            stacktrace: row.get(13)?,
-            stack_norm: row.get(14)?,
-            root_cause: row.get(15)?,
-            fingerprint: row.get(16)?,
-            correlation_id: row.get(17)?,
-            parent_event_id: row.get(18)?,
+            category: row.get(10)?,
+            error_code: row.get(11)?,
+            message: row.get(12)?,
+            exception: row.get(13)?,
+            stacktrace: row.get(14)?,
+            stack_norm: row.get(15)?,
+            root_cause: row.get(16)?,
+            fingerprint: row.get(17)?,
+            correlation_id: row.get(18)?,
+            parent_event_id: row.get(19)?,
             resolved_at,
             context,
             tags,
