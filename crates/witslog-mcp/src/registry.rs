@@ -133,10 +133,10 @@ impl<'a> ToolRegistry<'a> {
             .ok_or_else(|| McpError::InvalidParams("missing 'message'".to_string()))?;
 
         let exception = params.get("exception").and_then(|v| v.as_str());
-        let stacktrace = params.get("stacktrace").and_then(|v| v.as_str());
+        let error_code = params.get("error_code").and_then(|v| v.as_str());
 
         let classifier = witslog_core::Classifier::built_in();
-        let classification = classifier.classify(message, exception, stacktrace);
+        let classification = classifier.classify(message, exception, error_code);
 
         Ok(json!({
             "category": classification.canonical,
@@ -193,5 +193,35 @@ impl<'a> ToolRegistry<'a> {
                 })
             }).collect::<Vec<_>>()
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_error_uses_error_code_not_stacktrace_slot() {
+        let conn = Connection::open_in_memory().unwrap();
+        let registry = ToolRegistry::new(&conn);
+
+        let result = registry
+            .call_tool("classify_error", json!({"message": "boom", "error_code": "ETIMEDOUT"}))
+            .unwrap();
+
+        assert_eq!(result["category"], "infrastructure.network.timeout");
+        assert!(result["matched_rules"].as_array().unwrap().contains(&json!("builtin_etimedout")));
+    }
+
+    #[test]
+    fn classify_error_no_match_returns_null_category() {
+        let conn = Connection::open_in_memory().unwrap();
+        let registry = ToolRegistry::new(&conn);
+
+        let result = registry
+            .call_tool("classify_error", json!({"message": "something weird"}))
+            .unwrap();
+
+        assert!(result["category"].is_null());
     }
 }

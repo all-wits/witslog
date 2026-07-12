@@ -56,7 +56,7 @@ impl Tool {
                     "properties": {
                         "message": {"type": "string"},
                         "exception": {"type": "string"},
-                        "stacktrace": {"type": "string"}
+                        "error_code": {"type": "string"}
                     },
                     "required": ["message"]
                 }),
