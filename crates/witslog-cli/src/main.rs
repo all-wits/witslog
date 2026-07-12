@@ -558,8 +558,8 @@ fn cmd_vacuum(db_override: &Option<PathBuf>) -> Result<(), Box<dyn std::error::E
     let store = Store::open_or_create(&db_path)?;
     let conn = store.conn().conn();
 
-    conn.execute("VACUUM;", [])?;
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", [])?;
+    conn.execute_batch("VACUUM;")?;
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |_| Ok(()))?;
 
     println!("✓ Vacuumed and checkpointed WAL");
 
@@ -628,7 +628,7 @@ fn cmd_backup(
     let conn = store.conn().conn();
 
     // Simple backup: checkpoint WAL then copy file.
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", [])?;
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |_| Ok(()))?;
     std::fs::copy(&db_path, output)?;
 
     println!("✓ Backup created: {}", output.display());
