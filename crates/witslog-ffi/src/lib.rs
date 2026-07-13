@@ -352,6 +352,58 @@ pub unsafe extern "C" fn witslog_delete(filter_json_ptr: *const c_char) -> *mut 
     }
 }
 
+/// Mount witslog for the current process ("Provider" entrypoint). Applies the
+/// same configuration payload as `witslog_configure` (pass a null pointer to
+/// mount with defaults), then arms the ambient runtime so **Rust-side panics in
+/// this library are auto-captured** as `Fatal` events.
+///
+/// Capturing the *host language's* uncaught exceptions (Python `sys.excepthook`,
+/// Node `process.on('uncaughtException')`, …) is the SDK wrapper's job — it
+/// should route those to `witslog_log`. Call `witslog_flush`/`witslog_shutdown`
+/// before the process exits (e.g. from an atexit handler), since the C ABI has
+/// no RAII drop to flush a buffer.
+///
+/// Returns 0 on success, -1 on malformed JSON, -2 on an invalid redaction regex.
+///
+/// # Safety
+/// `json_ptr` must be null or a valid, NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn witslog_init(json_ptr: *const c_char) -> i32 {
+    if !json_ptr.is_null() {
+        let rc = witslog_configure(json_ptr);
+        if rc < 0 {
+            return rc;
+        }
+    }
+
+    // Arm the ambient runtime (installs the process-wide panic hook). It has no
+    // RAII guard here — the process lives until the host tears it down, and
+    // flushing is driven explicitly via `witslog_flush`.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    witslog_runtime::arm(witslog_config::Config::load_or_default(&cwd));
+    0
+}
+
+/// Flush any buffered events, joining the background flush thread so queued
+/// events are persisted before return. Idempotent. Call before process exit.
+#[no_mangle]
+pub extern "C" fn witslog_flush() -> i32 {
+    if let Some(buf_lock) = BUFFER.get() {
+        // Dropping the AsyncBuffer joins its flush thread.
+        *buf_lock.lock().unwrap() = None;
+    }
+    witslog_runtime::flush();
+    0
+}
+
+/// Un-mount witslog: flush buffered events and tear down the buffer. Alias of
+/// `witslog_flush` today; kept as a distinct symbol so SDK shutdown paths read
+/// clearly and future teardown can hang off it.
+#[no_mangle]
+pub extern "C" fn witslog_shutdown() -> i32 {
+    witslog_flush()
+}
+
 /// Free a string previously returned by this library (e.g. from `witslog_delete`).
 ///
 /// # Safety
@@ -420,6 +472,82 @@ mod tests {
                 .unwrap();
             assert_eq!(remaining, 0);
         });
+    }
+
+    #[test]
+    fn init_log_flush_shutdown_roundtrip_drains_buffer() {
+        with_tmp_cwd(|| unsafe {
+            // Mount with buffering enabled and a flush interval long enough that
+            // the count-before assertion below can't lose the race with the
+            // background timer, but short enough that `witslog_flush`'s
+            // shutdown-join (which only wakes on the *next* recv_timeout tick)
+            // doesn't stall the test for a full minute.
+            let init_json = CString::new(
+                r#"{"buffer":{"enabled":true,"batch_size":50,"flush_interval_ms":2000}}"#,
+            )
+            .unwrap();
+            assert_eq!(witslog_init(init_json.as_ptr()), 0);
+
+            let log_json =
+                CString::new(r#"{"application":"ffi-test","message":"buffered event"}"#)
+                    .unwrap();
+            let row_id = witslog_log(log_json.as_ptr());
+            // Buffered path returns 0 immediately; the row id isn't known yet.
+            assert_eq!(row_id, 0);
+
+            let count_before: i64 = {
+                let store = Store::open_or_create(resolve_db_path()).unwrap();
+                let n = store
+                    .conn()
+                    .conn()
+                    .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+                    .unwrap();
+                n
+            };
+            assert_eq!(count_before, 0, "event must still be queued, not yet persisted");
+
+            assert_eq!(witslog_flush(), 0);
+
+            let count_after: i64 = {
+                let store = Store::open_or_create(resolve_db_path()).unwrap();
+                let n = store
+                    .conn()
+                    .conn()
+                    .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+                    .unwrap();
+                n
+            };
+            assert_eq!(count_after, 1, "flush must persist the buffered event");
+
+            assert_eq!(witslog_shutdown(), 0);
+
+            // Reset global config so later tests in this process see defaults.
+            let reset_json = CString::new(r#"{"buffer":{"enabled":false}}"#).unwrap();
+            witslog_configure(reset_json.as_ptr());
+        });
+    }
+
+    #[test]
+    fn witslog_init_with_null_config_mounts_with_defaults() {
+        with_tmp_cwd(|| unsafe {
+            assert_eq!(witslog_init(std::ptr::null()), 0);
+
+            let log_json =
+                CString::new(r#"{"application":"app","message":"unbuffered via init"}"#)
+                    .unwrap();
+            let row_id = witslog_log(log_json.as_ptr());
+            // Buffering defaults off, so the synchronous path returns a real row id.
+            assert!(row_id > 0);
+
+            assert_eq!(witslog_flush(), 0);
+        });
+    }
+
+    #[test]
+    fn witslog_init_rejects_malformed_config_json() {
+        let bad_json = CString::new("not json").unwrap();
+        let rc = unsafe { witslog_init(bad_json.as_ptr()) };
+        assert_eq!(rc, -1);
     }
 
     #[test]

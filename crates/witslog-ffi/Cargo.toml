@@ -12,6 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 witslog-core = { path = "../witslog-core" }
 witslog-store = { path = "../witslog-store" }
 witslog-config = { path = "../witslog-config" }
+witslog-runtime = { path = "../witslog-runtime" }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

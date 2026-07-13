@@ -1,0 +1,23 @@
+[package]
+name = "witslog-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+witslog-core = { path = "../witslog-core" }
+witslog-store = { path = "../witslog-store" }
+witslog-config = { path = "../witslog-config" }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+[features]
+# The `tracing` Layer is Rust-only (tracing is a Rust-ecosystem facade), so it
+# is opt-in and does not affect the FFI/SDK surface.
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
+
+[dev-dependencies]
+tempfile.workspace = true

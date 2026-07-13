@@ -488,9 +488,31 @@ return valid shapes; invalid params → `-32602`.
 ABI so apps in those languages log structured events without touching FFI details.
 
 **Status.** 🟡 partial. C ABI (`witslog_log/resolve/delete/free_string`) shipped (P0);
-no language wrappers yet.
+the ambient **Provider/runtime** landed (`witslog-runtime` crate + `witslog_init`/`witslog_flush`/
+`witslog_shutdown`); no language wrappers yet.
 **Dependencies.** P0 (FFI-core), P1 (enrich/redact/configure surface).
 **Complexity.** M.
+
+**Provider / ambient capture (mount-once).** Rather than repeat the `EventBuilder` chain at every
+callsite, an app *mounts* witslog once at its entrypoint and captures errors ambiently — the Rust
+analog of a TanStack-Devtools / Next.js `<Provider>`.
+
+- **`witslog-runtime` crate.** `init(config) -> Guard` / `init_default()` build a process-global
+  runtime (redactor/enricher/classifier/buffer resolved once) and install a panic hook; the `Guard`
+  flushes on drop. `arm(config)` does the same without a guard (for the C ABI, which has no `Drop`).
+  `capture(builder)` is the ambient one-liner; `error!/warn!/info!` macros and a `Result::log_err(app)`
+  extension trait sit on top. `build_and_write(config, db_path, builder)` is the single stateless home
+  for the enrich→redact→classify→write pipeline (CLI `log_event` delegates to it).
+- **Auto-capture.** Panics (`std::panic::set_hook` → `Fatal`, written synchronously), `tracing`
+  error!/warn! events (via `WitslogLayer`, feature `tracing`, Rust-only), and `Result::Err` boundaries.
+- **FFI surface.** `witslog_init` mounts + installs the FFI crate's Rust panic hook; `witslog_flush`/
+  `witslog_shutdown` drain the buffer before exit. Existing `witslog_log`/`witslog_configure` signatures
+  are unchanged (additive).
+- **Cross-language asymmetry.** `tracing` does not cross the ABI. SDK wrappers capture the *host*
+  language's uncaught exceptions (Python `sys.excepthook`, Node `process.on('uncaughtException')`) and
+  route them to `witslog_log`; they mount with `witslog_init` and flush with `witslog_shutdown` at exit.
+- **Tests.** `crates/witslog-runtime/tests/p6_integration.rs` (panic→Fatal, `log_err`, `capture`
+  roundtrip); demo `cargo run -p witslog-runtime --example p6_provider`.
 
 **Functional requirements (EARS).**
 - **FR-P6-001** (ubiquitous): The system shall provide a Python package exposing

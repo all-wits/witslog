@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use witslog_config::Config;
-use witslog_core::{AsyncBuffer, BufferConfig, Classifier, EnrichConfig, EventBuilder, Redactor, Severity};
-use witslog_store::{DeleteFilter, Store, StoreSink};
+use witslog_core::{EventBuilder, Severity};
+use witslog_store::{DeleteFilter, Store};
 
 #[derive(Parser)]
 #[command(name = "witslog")]
@@ -151,6 +151,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
+    // Mount witslog so the CLI's own panics are auto-captured as Fatal events.
+    let _witslog_guard = witslog_runtime::init_default();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -281,31 +284,13 @@ fn log_event(
     let config = Config::load_or_default(&cwd);
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
-    if !db_path.parent().and_then(|p| Some(p.exists())).unwrap_or(false) {
+    if !db_path.parent().map(|p| p.exists()).unwrap_or(false) {
         return Err(format!(
             "Database not initialized. Run 'witslog init' in {}",
             cwd.display()
         )
         .into());
     }
-
-    let store = Store::open_or_create(&db_path)?;
-
-    let redactor = match Redactor::new(&config.redact.custom_patterns) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Invalid redaction pattern in config: {e}");
-            std::process::exit(2);
-        }
-    };
-    let enrich_cfg = EnrichConfig {
-        hostname: config.enrich.hostname,
-        pid: config.enrich.pid,
-        cwd: config.enrich.cwd,
-        argv: config.enrich.argv,
-        git_commit: config.enrich.git_commit,
-        env_allowlist: config.enrich.env_allowlist.clone(),
-    };
 
     let severity = match severity_str.as_deref().unwrap_or("error") {
         "trace" => Severity::Trace,
@@ -318,8 +303,7 @@ fn log_event(
         _ => Severity::Error,
     };
 
-    let mut builder = EventBuilder::new(app, message)
-        .severity(severity);
+    let mut builder = EventBuilder::new(app, message).severity(severity);
 
     if let Some(v) = version {
         builder = builder.version(v);
@@ -337,42 +321,9 @@ fn log_event(
         builder = builder.exception(exc);
     }
 
-    builder = builder.enrich(&enrich_cfg).redact(&redactor);
-
-    if config.taxonomy.auto_classify_enabled {
-        let classifier = match &config.taxonomy.custom_rules_file {
-            Some(path) => match witslog_core::load_custom_rules(path) {
-                Ok(rules) => Classifier::built_in_with_custom(rules),
-                Err(e) => {
-                    eprintln!("Invalid custom rules file {}: {e}", path.display());
-                    std::process::exit(2);
-                }
-            },
-            None => Classifier::built_in(),
-        };
-        builder = builder.classify(&classifier);
-    }
-
-    let event = builder.build();
-
-    if config.buffer.enabled {
-        let buffer_cfg = BufferConfig {
-            enabled: config.buffer.enabled,
-            batch_size: config.buffer.batch_size,
-            flush_interval_ms: config.buffer.flush_interval_ms,
-            queue_capacity: config.buffer.queue_capacity,
-        };
-        let sink = StoreSink::new(store);
-        let buffer = AsyncBuffer::new(sink, buffer_cfg);
-        buffer.enqueue(event.clone());
-        // Dropping joins the flush thread, guaranteeing the event is
-        // persisted (or counted as dropped) before this short-lived
-        // process exits.
-        drop(buffer);
-    } else {
-        let writer = witslog_store::EventWriter::new(store.conn());
-        let _row_id = writer.write(&event)?;
-    }
+    // Single home for the enrich → redact → classify → build → write pipeline;
+    // previously ~100 lines of boilerplate inlined here.
+    let event = witslog_runtime::build_and_write(&config, &db_path, builder)?;
 
     println!("✓ Event logged");
     println!("  event_id: {}", event.event_id);

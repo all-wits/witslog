@@ -21,7 +21,8 @@ Workspace in `crates/`. Built crates:
 | **witslog-query** | FTS5 search + structured filters + aggregates | `search.rs` (bm25 + keyset cursor), `filters.rs`, `aggregates.rs` (stats/timeline/top_failures), `correlate.rs` (edge walks) |
 | **witslog-mcp** | MCP tool registry + JSON-RPC transport | `registry.rs` (all 12 tools), `transport.rs` (stdio JSON-RPC), `tools.rs` (schema) — built, **not yet wired to CLI** |
 | **witslog-cli** | CLI subcommands (init/log/get/query/stats/export/import/vacuum/prune/config/archive/backup/list-dbs/migrate/resolve/delete/doctor/category) | `main.rs` (clap Commands) |
-| **witslog-ffi** | C ABI for embedding | `lib.rs` (witslog_log, witslog_resolve, witslog_delete) |
+| **witslog-ffi** | C ABI for embedding | `lib.rs` (witslog_log, witslog_resolve, witslog_delete, witslog_init/flush/shutdown) |
+| **witslog-runtime** | Ambient "Provider" — mount-once init-guard, ambient capture, panic hook, `tracing` Layer, `Result::log_err`, shared enrich→redact→classify→write pipeline | `lib.rs` (init/Guard/arm/capture/build_and_write/LogErr/macros), `tracing_layer.rs` (feature `tracing`) |
 
 **Not yet built**: witslog-plugin (extensibility, P9).
 
@@ -66,7 +67,7 @@ Workspace in `crates/`. Built crates:
 - ✅ **P3**: FTS5 + query engine — migrate_0005_fts5 shipped, witslog-query crate (search/aggregates/filters/correlate), p3_integration tests.
 - 🟡 **P4**: CLI ops — query/stats/export/import/vacuum/prune/migrate/config/archive/backup/list-dbs/category all shipped; missing global `--json` flag.
 - ✅ **P5**: MCP server — witslog-mcp crate (all 12 tools, JSON-RPC stdio transport, schema validation, statement timeout), wired into CLI as `witslog serve-mcp [--stdio] [--attach] [--allow-write]`, conformance test (`p5_integration.rs`) green.
-- ⬜ **P6** (current): SDK bindings (Python, Node).
+- 🟡 **P6** (current): SDK bindings (Python, Node). **Provider/runtime landed** — `witslog-runtime` crate (init-guard + ambient capture of panics / `tracing` error!·warn! / `Result::log_err`), FFI `witslog_init`/`witslog_flush`/`witslog_shutdown`, CLI mounts a guard + `log_event` now delegates to `witslog_runtime::build_and_write`. `tests/p6_integration.rs` green. Remaining: the actual Python/Node SDK wrappers over the C ABI (their host-language excepthooks call `witslog_log`; `tracing` Layer is Rust-only and does not cross the ABI).
 - ⬜ **P7**: Perf + hardening (benches, concurrency).
 - ⬜ **P8**: Packaging + install (cross-compile, release).
 - ⬜ **P9**: Extensibility + security (plugins, encryption, audit).
@@ -76,7 +77,7 @@ Workspace in `crates/`. Built crates:
 ## Next Steps
 
 1. **P4**: add global `--json` output flag.
-2. **P6**: SDK bindings (Python, Node) over the C ABI.
+2. **P6**: build the Python/Node SDK wrappers over the C ABI — mount via `witslog_init`, register the host-language uncaught-exception hook to call `witslog_log`, flush via `witslog_shutdown` at exit. The Rust-side provider (`witslog-runtime`) is already in place.
 
 ## Dev Workflow
 
@@ -109,7 +110,11 @@ Workspace in `crates/`. Built crates:
 - **Redaction is applied pre-build**: message/exception/stacktrace/context/metadata all redacted in `.redact()`.
 - **FTS5 live**: `events_fts` created + triggered by `migrate_0005_fts5`; query via `witslog-query::SearchEngine`.
 - **P5 wiring merged 2026-07-12**: the agent worktree that had `serve-mcp` CLI wiring was committed and fast-forward merged into `feat/P5-MCP-tooling`, then removed — no longer a separate worktree.
+- **Provider is additive**: `witslog-runtime` layers on top of `EventBuilder`/`witslog_log` — none of the existing APIs changed. `witslog_runtime::build_and_write(config, db_path, builder)` is the single home for the enrich→redact→classify→write pipeline (CLI `log_event` and the ambient `capture` both route through it; don't re-inline it).
+- **Panic capture writes synchronously**: the runtime panic hook uses a sync write (never the async buffer) because a panic may precede process abort. It also chains to the previously-installed hook, and is installed at most once per process.
+- **FFI has no `Drop`**: buffered events need an explicit `witslog_flush`/`witslog_shutdown` before exit (SDK atexit). The Rust `Guard` from `init()`/`init_default()` flushes automatically on drop.
+- **`tracing` Layer is Rust-only + feature-gated**: `witslog-runtime`'s `WitslogLayer` lives behind the `tracing` feature and does not cross the C ABI. Cross-language SDKs capture host-language exceptions themselves.
 
 ---
 
-Last updated: 2026-07-12. Reflect code reality, not aspirational state.
+Last updated: 2026-07-13. Reflect code reality, not aspirational state.
