@@ -1,0 +1,33 @@
+[package]
+name = "witslog-bench"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+witslog-core = { path = "../crates/witslog-core" }
+witslog-store = { path = "../crates/witslog-store" }
+witslog-query = { path = "../crates/witslog-query" }
+tempfile.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "write_throughput"
+harness = false
+
+[[bench]]
+name = "buffered_log_latency"
+harness = false
+
+[[bench]]
+name = "search_latency"
+harness = false
+
+[[bench]]
+name = "index_build_cost"
+harness = false

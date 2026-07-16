@@ -8,6 +8,7 @@ members = [
     "crates/witslog-cli",
     "crates/witslog-ffi",
     "crates/witslog-runtime",
+    "bench",
 ]
 resolver = "2"
 

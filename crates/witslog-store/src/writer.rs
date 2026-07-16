@@ -16,6 +16,16 @@ impl<'a> EventWriter<'a> {
         write_event(&conn, event)
     }
 
+    /// Write a batch of events in a single transaction (bench/high-throughput path).
+    pub fn write_batch(&self, events: &[Event]) -> Result<()> {
+        self.conn.transaction(|tx| {
+            for event in events {
+                write_event(tx, event)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Best-effort bump of the lifetime dropped-events counter (mirrored from an
     /// in-process atomic — see `witslog-core::buffer`). Never surfaces failure to
     /// the caller beyond the `Result`; callers on the FFI/buffer hot path should

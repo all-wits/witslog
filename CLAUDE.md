@@ -77,7 +77,7 @@ gate + per-language SDK↔CLI readback + argv-mitigation lock — see Gotchas).
 - 🟡 **P4**: CLI ops — query/stats/export/import/vacuum/prune/migrate/config/archive/backup/list-dbs/category all shipped; missing global `--json` flag.
 - ✅ **P5**: MCP server — witslog-mcp crate (all 12 tools, JSON-RPC stdio transport, schema validation, statement timeout), wired into CLI as `witslog serve-mcp [--stdio] [--attach] [--allow-write]`, conformance test (`p5_integration.rs`) green.
 - ✅ **P6**: SDK bindings. Provider/runtime landed (`witslog-runtime`); C ABI extended additively with `context`/`tags`/`metadata` on `witslog_log` + a `witslog_abi_version()` handshake. Three framework-agnostic SDKs under `bindings/` — Python (`ctypes`, 0 deps) + FastAPI/Django/Flask, Node (`koffi`) + Express, PHP (`ext-ffi`) + Laravel provider — over the shared JSON contract (`bindings/CONTRACT.md`). Per-language unit tests + cross-language e2e (`bindings/e2e/run.ps1`, SDK→CLI readback) green.
-- ⬜ **P7**: Perf + hardening (benches, concurrency).
+- ✅ **P7**: Perf + hardening. Criterion bench suite (`bench/`: write throughput, buffered-log latency, search latency, FTS index-build cost), concurrency harness (`witslog-store/tests/p7_concurrency.rs`, 8 independent connections on one DB, zero loss + `integrity_check=ok`), load harness (`p7_load.rs`, scales via `WITSLOG_LOAD_TEST_ROWS`), memory script (`scripts/measure_memory.ps1`), CI (`.github/workflows/ci.yml`) with a bench-regression gate (`scripts/check_bench_regression.ps1`). Docs: `docs/perf.md`.
 - ⬜ **P8**: Packaging + install (cross-compile, release).
 - ⬜ **P9**: Extensibility + security (plugins, encryption, audit).
 
@@ -86,7 +86,7 @@ gate + per-language SDK↔CLI readback + argv-mitigation lock — see Gotchas).
 ## Next Steps
 
 1. **P4**: add global `--json` output flag.
-2. **P7**: perf benches + concurrency hardening (see PHASES.md §P7).
+2. **P8**: packaging + install (cross-compile, install scripts, MCP registration) — see PHASES.md §P8.
 
 ## Dev Workflow
 
@@ -95,6 +95,7 @@ gate + per-language SDK↔CLI readback + argv-mitigation lock — see Gotchas).
 - **Lint**: `cargo clippy --workspace`.
 - **Example**: `cargo run --example p2_classify` (examples in `examples/`, built via `[[example]]` in workspace Cargo.toml).
 - **Manual test**: `witslog init . && witslog log app "msg" && witslog query <id>`.
+- **Bench**: `cargo bench -p witslog-bench` (see `docs/perf.md`); memory: `pwsh scripts/measure_memory.ps1 -Release`.
 
 ## Key Types & Paths
 

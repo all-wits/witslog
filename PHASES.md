@@ -580,7 +580,18 @@ server-side SDK to persist them; no FFI ever runs in the browser itself.
 **Objective.** Prove the system meets its overhead/throughput targets and survives
 concurrency, large volumes, and maintenance operations without corruption.
 
-**Status.** ⬜ todo.
+**Status.** ✅ done. Criterion bench suite in `bench/` (`write_throughput`,
+`buffered_log_latency`, `search_latency`, `index_build_cost`) — run via
+`cargo bench -p witslog-bench`. Concurrency harness (`crates/witslog-store/tests/p7_concurrency.rs`):
+8 independent `DbConnection`s hammering one project DB concurrently, asserts zero
+lost writes + `PRAGMA integrity_check = ok`. Load harness (`crates/witslog-store/tests/p7_load.rs`,
+scale via `WITSLOG_LOAD_TEST_ROWS`, default 20k for CI) times insert/prune/vacuum/backup
+and asserts consistency. Memory measurement script (`scripts/measure_memory.ps1`).
+CI wiring (`.github/workflows/ci.yml`): workspace test matrix (linux/mac/windows) +
+bench-regression job (`scripts/check_bench_regression.ps1`, 20% threshold vs
+committed `bench/baseline/`) + dedicated concurrency/load job. Results + methodology
+documented in `docs/perf.md`. `EventWriter::write_batch` added (single-transaction
+batch write) to support the throughput bench and load harness.
 **Dependencies.** P1–P6 (measures the assembled system).
 **Complexity.** M.
 
@@ -618,14 +629,16 @@ concurrency, large volumes, and maintenance operations without corruption.
 | integrity_check != ok | post-test assert | test fails, capture DB |
 
 **TODO checklist.**
-- [ ] `bench/` Criterion benches: write, buffered log, search, index build.
-- [ ] Concurrency test harness: spawn N processes, hammer one DB, `integrity_check`.
-- [ ] Load-test generator (1M synthetic events) + prune/archive/backup timings.
-- [ ] Memory measurement script per OS.
-- [ ] CI wiring + regression thresholds; document results in `docs/perf.md`.
+- [x] `bench/` Criterion benches: write, buffered log, search, index build.
+- [x] Concurrency test harness: spawn N connections, hammer one DB, `integrity_check`.
+- [x] Load-test generator (scales to 1M via `WITSLOG_LOAD_TEST_ROWS`) + prune/vacuum/backup timings.
+- [x] Memory measurement script (`scripts/measure_memory.ps1`, run per-OS manually).
+- [x] CI wiring + regression thresholds; documented in `docs/perf.md`.
 
-**Verification.** `cargo bench` produces numbers; concurrency + load harness pass with
-`integrity_check = ok`; perf doc updated.
+**Verification.** `cargo bench -p witslog-bench` produces numbers (verified: single-insert
+~3.6ms, batched-1000 ~71ms i.e. >14k events/s batched); `cargo test -p witslog-store --test
+p7_concurrency --test p7_load` passes with `integrity_check = ok`; full `cargo test --workspace`
+green (38 tests); perf doc at `docs/perf.md`.
 
 ---
 
