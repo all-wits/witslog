@@ -27,6 +27,10 @@ bindings/php/.phpunit.result.cache
 bindings/python/**/__pycache__/
 bindings/python/**/*.egg-info/
 
+# SDK bindings — native lib binaries, assembled by CI (release-node-sdk.yml)
+# or copied locally for dev; not source, never committed.
+bindings/*/_libs/
+
 # OS
 Thumbs.db
 .DS_Store

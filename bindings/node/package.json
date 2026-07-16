@@ -1,9 +1,14 @@
 {
-  "name": "witslog",
+  "name": "@all-wits/witslog",
   "version": "0.1.0",
   "description": "Framework-agnostic Node.js SDK for witslog structured error logging",
   "license": "Apache-2.0",
   "author": "witslog team",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/all-wits/witslog.git",
+    "directory": "bindings/node"
+  },
   "main": "index.js",
   "types": "index.d.ts",
   "files": [

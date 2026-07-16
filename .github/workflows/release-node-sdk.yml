@@ -1,0 +1,98 @@
+name: Release Node SDK (cross-platform native lib)
+
+# Builds witslog_ffi natively on 5 hosted-runner OS/arch combos (no
+# cross-compilation - avoids the rusqlite bundled-C cross-toolchain problem),
+# assembles them into bindings/node/_libs/<platform>/, then publishes
+# @all-wits/witslog to npm. The same 5 artifacts are reusable by the Python
+# and PHP bindings' _libs/<platform>/ layout (identical locator convention -
+# see bindings/CONTRACT.md), even though this workflow only wires up Node.
+#
+# Trigger: manual only (workflow_dispatch). Requires the NPM_TOKEN repo
+# secret (npmjs.com -> Access Tokens -> Automation token, scoped to publish).
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to npm after building (false = build/verify only)"
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_dir: win32-x64
+            lib_name: witslog_ffi.dll
+            artifact_path: target/release/witslog_ffi.dll
+          - os: ubuntu-latest
+            platform_dir: linux-x64
+            lib_name: libwitslog_ffi.so
+            artifact_path: target/release/libwitslog_ffi.so
+          - os: ubuntu-24.04-arm
+            platform_dir: linux-arm64
+            lib_name: libwitslog_ffi.so
+            artifact_path: target/release/libwitslog_ffi.so
+          - os: macos-13 # Intel
+            platform_dir: darwin-x64
+            lib_name: libwitslog_ffi.dylib
+            artifact_path: target/release/libwitslog_ffi.dylib
+          - os: macos-14 # Apple Silicon
+            platform_dir: darwin-arm64
+            lib_name: libwitslog_ffi.dylib
+            artifact_path: target/release/libwitslog_ffi.dylib
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo build --release -p witslog-ffi
+        run: cargo build --release -p witslog-ffi
+
+      - name: Verify the expected artifact exists
+        shell: bash
+        run: test -f "${{ matrix.artifact_path }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform_dir }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+
+  assemble-and-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download all platform artifacts into bindings/node/_libs/
+        uses: actions/download-artifact@v4
+        with:
+          path: bindings/node/_libs
+
+      # actions/download-artifact@v4 lays each artifact out as
+      # _libs/<platform_dir>/<lib_name> already - matches the SDK locator
+      # convention (bindings/CONTRACT.md) with zero rearranging needed.
+      - name: List assembled _libs
+        run: find bindings/node/_libs -type f
+
+      - name: npm pack --dry-run (always, for the workflow log)
+        working-directory: bindings/node
+        run: npm pack --dry-run
+
+      - name: npm publish
+        if: ${{ inputs.publish }}
+        working-directory: bindings/node
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
