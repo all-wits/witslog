@@ -7,6 +7,8 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-07-17
+
 ### Added
 
 - **P8 — Packaging + install (partial)**:
