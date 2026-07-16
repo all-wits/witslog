@@ -633,6 +633,14 @@ Critical path: M1→M2/M4→M6→M8. M3 parallel to M2. M7/M9 after core.
 - **Notifiers** — plugin exporters to webhook/desktop/file (kept out of core, no cloud).
 - **Web/TUI dashboard** — read-only local viewer over the same query engine.
 - **Sampling / rate-limiting** — for very high-volume producers.
+- **Browser-side error capture (client-runtime, not HTTP 4xx)** — SDKs (P6) are Node/Python/
+  PHP processes calling native FFI; they cannot run inside a browser tab, so a JS error thrown
+  in client-rendered code (Vue/React component, browser `window.onerror`/`unhandledrejection`)
+  is invisible to witslog today. This is orthogonal to HTTP 4xx responses, which a server
+  already logs fine via the normal SDK path. A future SDK addition could ship a tiny browser
+  reporter that ships caught errors to a backend endpoint via `navigator.sendBeacon` (preferred
+  — survives page unload, unlike `fetch`) or `fetch`, which then calls the Node/Python/PHP SDK
+  server-side to persist them. No native/FFI code would ever run in the browser itself.
 
 ---
 

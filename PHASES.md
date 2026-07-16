@@ -564,6 +564,15 @@ analog of a TanStack-Devtools / Next.js `<Provider>`.
 **Verification.** In a temp project: Python `witslog.error(...)` then `witslog query <id>`
 finds it; repeat for Node. Import with lib removed → clear error.
 
+**Future enhancement (out of P6 scope, tracked in PLAN.md §10).** SDKs are Node/Python/PHP
+*processes* calling native FFI — none can run inside a browser tab, so a client-runtime JS
+error (e.g. thrown in a browser-rendered Vue/React component) is invisible to witslog. This
+is unrelated to HTTP 4xx responses, which a server already logs fine via the existing SDK path
+(the server code returning the 4xx just calls `witslog.warn/error` before responding). A future
+browser reporter would ship caught client errors to a backend endpoint — preferably via
+`navigator.sendBeacon` (survives page unload, unlike `fetch`) — which then calls the
+server-side SDK to persist them; no FFI ever runs in the browser itself.
+
 ---
 
 ## P7 — Perf & hardening

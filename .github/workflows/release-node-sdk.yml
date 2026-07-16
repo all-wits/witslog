@@ -76,7 +76,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "latest"
           registry-url: "https://registry.npmjs.org"
 
       - name: Download all platform artifacts into bindings/node/_libs/
@@ -94,8 +94,26 @@ jobs:
         working-directory: bindings/node
         run: npm pack --dry-run
 
+      # Guards against re-publishing an already-shipped version (npm rejects
+      # it anyway, but this fails fast with a clear reason instead of an
+      # opaque registry 403, and skips a wasted auth attempt).
+      - name: Check whether package.json version differs from the published one
+        id: version_check
+        working-directory: bindings/node
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED_VERSION=$(npm view "$(node -p "require('./package.json').name")" version 2>/dev/null || echo "none")
+          echo "local=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "published=$PUBLISHED_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$LOCAL_VERSION" = "$PUBLISHED_VERSION" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::package.json version ($LOCAL_VERSION) matches the published version - publish will be skipped. Bump the version to release."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: npm publish
-        if: ${{ inputs.publish }}
+        if: ${{ inputs.publish && steps.version_check.outputs.changed == 'true' }}
         working-directory: bindings/node
         run: npm publish --access public
         env:

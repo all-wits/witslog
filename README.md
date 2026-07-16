@@ -1,78 +1,127 @@
-# witslog — AI-Native Error Intelligence Framework
+<div align="center">
 
-Structured error logging that AI assistants (via MCP) can query and reason about. **No embeddings, no cloud, no infra.**
+# 🪵 witslog
 
-Errors are stored in a local SQLite DB organized by category, searchable via full-text indexing, and queryable with deterministic taxonomy + structured filters. Built for embedding inside apps and for cross-language integration via C FFI.
+**AI-native error intelligence — structured, local, queryable by any MCP assistant.**
 
-## Quick Start
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/%40all-wits%2Fwitslog?label=npm&logo=npm)](https://www.npmjs.com/package/@all-wits/witslog)
+[![CI: Node SDK release](https://img.shields.io/github/actions/workflow/status/all-wits/witslog/release-node-sdk.yml?label=node%20sdk%20release&logo=githubactions)](https://github.com/all-wits/witslog/actions/workflows/release-node-sdk.yml)
+[![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust)](https://www.rust-lang.org/)
+[![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
 
-### Installation
+**No embeddings. No cloud. No infra.**
 
-**Via installer** (coming in P8):
+</div>
+
+---
+
+Errors are captured as **structured events** (not text lines), stored in a local SQLite
+database per project, indexed with full-text search, auto-classified by a deterministic
+taxonomy engine, and exposed to AI assistants over **MCP** (Model Context Protocol) — so an
+LLM can search, correlate, and reason about your failure history without you writing a single
+query.
+
+## ✨ Features
+
+- 🗄️ **Per-project SQLite** — one `.witslog/witslog.db`, WAL mode, zero external services.
+- 🔍 **Full-text search** — FTS5, bm25 ranking, prefix/phrase/boolean/NEAR queries.
+- 🏷️ **Deterministic taxonomy** — rule-based auto-classification, no model/embedding needed.
+- 🔒 **Redaction built in** — secrets/PII stripped before anything touches disk.
+- 🔗 **Correlation & fingerprinting** — dedup recurring errors, walk causality chains.
+- 🤖 **MCP server** — 12 read tools + 1 gated write tool for any MCP-compatible assistant.
+- 🌍 **Cross-language SDKs** — Node, Python, PHP/Laravel over a shared C ABI.
+
+## 📦 Install
+
+### CLI (Rust)
+
 ```bash
+# Via installer (coming in P8)
 curl -fsSL https://witslog.dev/install.sh | sh
-```
 
-**Via Rust** (dev):
-```bash
+# From source (dev)
 cargo install --path crates/witslog-cli
 ```
 
+### SDKs
+
+| Language | Package | Install |
+|----------|---------|---------|
+| **Node.js** | [`@all-wits/witslog`](bindings/node) | `npm install @all-wits/witslog` · `pnpm add @all-wits/witslog` · `bun add @all-wits/witslog` |
+| **Python** | [`witslog`](bindings/python) | `pip install witslog` |
+| **PHP / Laravel** | [`witslog/witslog`](bindings/php) | `composer require witslog/witslog` |
+
+Each SDK is a **framework-agnostic core** over the native C ABI (`witslog-ffi`) — no cloud
+calls, no telemetry. See each package's README for framework adapters (Express, FastAPI,
+Django, Flask, Laravel) and the [SDK↔native contract](bindings/CONTRACT.md).
+
+## 🚀 Quick Start
+
 ### Initialize a project
+
 ```bash
 witslog init .
 ```
+
 Creates `./.witslog/witslog.db` in the current directory.
 
 ### Log an event
+
 ```bash
 witslog log app "connection timeout" --error-code ETIMEDOUT --severity error
 ```
 
-### Query by ID
+### Search & inspect
+
 ```bash
-witslog query <event-id>
+witslog query "timeout*" --severity error
+witslog stats
+witslog serve-mcp --stdio   # expose the log to an MCP-compatible AI assistant
 ```
 
-### Full CLI help
-```bash
-witslog --help
+### From an app (Node example)
+
+```js
+const witslog = require('@all-wits/witslog');
+
+witslog.init();
+witslog.error('my-app', 'out of memory', { context: { pid: process.pid } });
 ```
 
-## Status
+See [bindings/node](bindings/node), [bindings/python](bindings/python), and
+[bindings/php](bindings/php) for the Python/PHP equivalents.
 
-**Pre-1.0, usable for**: init, log, query (by ID), resolve, delete, doctor.
+## 🧭 Status
 
-**Shipped** (P0 + P1 + P2):
-- ✅ Structured event model (JSON-friendly).
-- ✅ SQLite storage with WAL, per-project isolation.
-- ✅ Event fingerprinting for dedup (normalized message + stack + category).
-- ✅ Redaction of secrets/PII before store.
-- ✅ Enrichment (hostname/pid/cwd/git_commit auto-capture), config-gated.
-- ✅ Async buffering (batch flush off the caller's thread), config-gated via `[buffer]`.
-- ✅ Resolved/unresolved event lifecycle + deletion.
-- ✅ **Taxonomy**: builtin error category tree (infrastructure/application/runtime/external), deterministic auto-classify via rules (error_code/exception/message keyword/regex), wired into CLI `log`.
-- ✅ C FFI for embedding in any language.
-- ✅ CLI: init, log, query, resolve, delete, doctor.
+Pre-1.0. Core logging, storage, taxonomy, search, MCP server, and SDKs are shipped and tested;
+performance hardening and packaging are next.
 
-**Not yet** (P3–P9):
-- ⬜ Full-text search (FTS5) — placeholder in schema, migration pending.
-- ⬜ Query engine (stats, timeline, aggregates).
-- ⬜ CLI: query (FTS), export, import, prune, archive, backup.
-- ⬜ MCP server (AI assistant integration).
-- ⬜ SDK bindings (Python, Node).
-- ⬜ Packaging + cross-platform install.
-- ⬜ Extensibility (plugins) + security (encryption, audit).
+| Phase | What | Status |
+|-------|------|--------|
+| P0 | Storage + event model, CLI core, C ABI | ✅ |
+| P1 | Enrichment, redaction, async buffering | ✅ |
+| P2 | Taxonomy engine (auto-classify) | ✅ |
+| P3 | FTS5 + query engine (search/aggregates/correlation) | ✅ |
+| P4 | CLI utilities (export/import/prune/archive/backup/...) | 🟡 missing global `--json` |
+| P5 | MCP server (12 tools, JSON-RPC/stdio) | ✅ |
+| P6 | SDK bindings (Node/Python/PHP + framework adapters) | ✅ |
+| P7 | Perf benches + concurrency hardening | ⬜ |
+| P8 | Packaging + cross-platform install | ⬜ |
+| P9 | Extensibility (plugins) + security (encryption, audit) | ⬜ |
 
-## Architecture
+See [CHANGELOG.md](CHANGELOG.md) for release notes and [PHASES.md](PHASES.md) for the detailed
+per-phase spec.
+
+## 🏗️ Architecture
 
 ```
-App code
-   ↓
-EventBuilder (fluent) → enrich → redact → classify → build
+App code (any language)
+   ↓  SDK / native EventBuilder
+enrich → redact → classify → build
    ↓
 SQLite (WAL mode, per-project)
-   ├─ events (append-only, denormalized)
+   ├─ events (append-only, denormalized + FTS5)
    ├─ categories (taxonomy tree)
    ├─ fingerprints (dedup/rollup)
    ├─ error_edges (causality graph)
@@ -80,108 +129,26 @@ SQLite (WAL mode, per-project)
    ↓
 Read-only access:
    ├─ CLI (init, query, stats, export, ...)
-   ├─ MCP server (JSON-RPC tools for AI)
+   ├─ MCP server (JSON-RPC tools for AI assistants)
    └─ Analytics (trends, MTTR)
 ```
 
-**Single source of truth**: local SQLite file. No syncing, no cloud, full control.
+**Single source of truth**: a local SQLite file. No syncing, no cloud, full control.
 
-## Examples
+## 🤖 Integration with AI (MCP)
 
-### Rust
-```rust
-use witslog_core::{error, Classifier};
-
-let classifier = Classifier::built_in();
-
-let event = error("my-app", "DNS resolution failed")
-    .error_code("ENOTFOUND")
-    .classify(&classifier)  // Assigns category: infrastructure.network.dns
-    .build();
-
-eprintln!("Event ID: {}", event.event_id);
-eprintln!("Category: {:?}", event.category);
-```
-
-### Python (via FFI, coming in P6)
-```python
-import witslog
-
-witslog.error("my-app", "connection refused", error_code="ECONNREFUSED")
-```
-
-### Node (via FFI, coming in P6)
-```javascript
-const witslog = require('witslog');
-
-witslog.error('my-app', 'out of memory', { context: { pid: process.pid } });
-```
-
-## CLI Subcommands
-
-**Current**:
-- `witslog init [DIR]` — initialize DB at `.witslog/witslog.db`.
-- `witslog log <app> <msg>` — log an event. Flags: `--severity`, `--error-code`, `--exception`, `--category`, `--context JSON`, `--tags`, etc.
-- `witslog query <event-id>` — fetch one event by ID (human or `--json`).
-- `witslog resolve <event-id>` — mark resolved.
-- `witslog delete [filters]` — delete resolved events. `--dry-run` for preview.
-- `witslog doctor` — health check (schema version, migration status).
-
-**Planned** (P3–P4):
-- `witslog query <FTS-query> [--filters]` — full-text + structured search with `--json --cursor`.
-- `witslog stats [--filters]` — aggregates (totals, by severity/category/host).
-- `witslog export [--from] [--to]` — NDJSON stream to stdout/file.
-- `witslog import <file>` — consume NDJSON.
-- `witslog prune --older-than 30d` — delete aged rows in batches.
-- `witslog archive --older-than 30d` — move to sibling archive DB.
-- `witslog vacuum` — shrink DB.
-- `witslog migrate` — apply pending migrations + backup.
-- `witslog config [get|set|path]` — read/write config.
-
-## Config
-
-Optional: `.witslog/config.toml` (per-project) or global at `~/.config/witslog/config.toml`.
-
-Example:
-```toml
-[enrich]
-hostname = true
-pid = true
-cwd = true
-git_commit = true
-
-[redact]
-custom_patterns = ["password=.*", "token=.*"]
-
-[buffer]
-enabled = false
-batch_size = 50
-flush_interval_ms = 1000
-
-[taxonomy]
-auto_classify_enabled = true
-# custom_rules_file = "./taxonomy-rules.json"  # coming in P2
-```
-
-## Integration with AI
-
-**Via MCP** (coming in P5):
-```
+```bash
 witslog serve-mcp --stdio
 ```
-Runs as a stdio server; clients (Claude, other LLMs) call tools:
-- `search_errors` — FTS + structured filters.
-- `latest_errors` — recent failures.
-- `classify_error` — determine category for raw error.
-- `explain_error` — full dossier + recurrence stats.
-- `similar_errors` — near-dupes by fingerprint or lexical match.
-- `list_categories` — taxonomy tree.
-- `statistics` — headline metrics.
-- `timeline` — bucketed trends.
-- `top_failures` — ranked recurring issues.
-- `list_traces` — causality chains.
 
-MCP registration snippet:
+Runs as a stdio JSON-RPC server. Any MCP-compatible client (Claude, other LLMs) can call:
+
+`search_errors` · `latest_errors` · `summarize_errors` · `classify_error` · `explain_error` ·
+`similar_errors` · `list_categories` · `statistics` · `timeline` · `top_failures` ·
+`list_traces` · `search_all` (opt-in federation) · `witslog_delete` (gated, write)
+
+MCP client registration snippet:
+
 ```json
 {
   "mcpServers": {
@@ -193,74 +160,74 @@ MCP registration snippet:
 }
 ```
 
-**Via C FFI** (shipped in P0):
-Any language can call:
-```c
-const char* event_json = "{ \"message\": \"boom\", ... }";
-int result = witslog_log(db_path, event_json);
-// result: 1 = ok, -1 = error (check via witslog_free_string)
-```
-
-## Taxonomy
+## 🏷️ Taxonomy
 
 **Builtin categories** (infrastructure/application/runtime/external):
-- `infrastructure.network.{dns, timeout, connection}`
-- `infrastructure.storage.{disk, database}`
-- `infrastructure.compute.{memory, cpu}`
-- `application.{error, validation, authentication, authorization}`
-- `runtime.{panic, segfault, outofmemory}`
-- `external.{api.rate_limit, service}`
 
-**Auto-classify rules** (deterministic, order matters):
-1. Error code map (e.g., `ETIMEDOUT` → `infrastructure.network.timeout`).
-2. Exception type map (e.g., `IOException` → `infrastructure.storage`).
-3. Message keyword/regex (case-insensitive substring or regex).
-
-No match → `category: null`, tag: `unclassified`.
-
-**Custom categories & aliases** (coming in P2):
-```bash
-witslog category add custom.app.feature "My Feature Error"
-witslog alias "myalias" custom.app.feature
+```
+infrastructure.network.{dns, timeout, connection}
+infrastructure.storage.{disk, database}
+infrastructure.compute.{memory, cpu}
+application.{error, validation, authentication, authorization}
+runtime.{panic, segfault, outofmemory}
+external.{api.rate_limit, service}
 ```
 
-## Performance Targets
+**Auto-classify rules** (deterministic, in order): error-code map → exception-type map →
+message keyword/regex. No match → `category: null`, tagged `unclassified`.
 
-- **Buffered log call**: < 100 µs (hot path).
-- **Single-writer throughput**: ≥ 10k events/s.
-- **Search on 100k events**: < 50 ms.
-- **Classification**: < 50 µs.
-- **Idle CLI memory**: < 15 MB; MCP server < 30 MB.
+## ⚡ Performance Targets
+
+| Metric | Target |
+|--------|--------|
+| Buffered log call | < 100 µs |
+| Single-writer throughput | ≥ 10k events/s |
+| Search on 100k events | < 50 ms |
+| Classification | < 50 µs |
+| Idle CLI memory | < 15 MB |
+| Idle MCP server memory | < 30 MB |
 
 (Measured in P7; in-flight targets.)
 
-## Development
+## 🛠️ Development
 
-See **CLAUDE.md** for architecture, crate map, and conventions. **PLAN.md** has full spec; **PHASES.md** has phase-by-phase requirements.
+See **[CLAUDE.md](CLAUDE.md)** for architecture, crate map, and conventions.
+**[PLAN.md](PLAN.md)** has the full spec; **[PHASES.md](PHASES.md)** has phase-by-phase
+requirements.
 
 ```bash
 # Build all
 cargo build --workspace
 
-# Test
-cargo test -p witslog-core
-cargo test --test p2_integration
+# Test (Rust workspace)
+cargo test --workspace
+
+# Test an SDK
+py -m pytest bindings/python/tests          # Python
+npm test --prefix bindings/node             # Node
+composer test --working-dir=bindings/php    # PHP
+
+# Cross-language regression driver
+pwsh bindings/e2e/run.ps1
 
 # Lint
 cargo clippy --workspace
-
-# Examples
-cargo run --example p2_classify
 ```
 
-## License
+## 📄 License
 
-Apache License 2.0. See LICENSE.
+Apache License 2.0. See [LICENSE](LICENSE).
 
-## Contributing
+## 🤝 Contributing
 
 Not accepting external PRs yet (pre-1.0). Issues + feedback welcome.
 
 ---
 
-**Learn more**: [PLAN.md](PLAN.md) (design doc), [PHASES.md](PHASES.md) (phase roadmap), [CLAUDE.md](CLAUDE.md) (dev guide).
+<div align="center">
+
+**Learn more**: [PLAN.md](PLAN.md) (design doc) · [PHASES.md](PHASES.md) (phase roadmap) ·
+[CLAUDE.md](CLAUDE.md) (dev guide) · [CHANGELOG.md](CHANGELOG.md) (release notes) ·
+[bindings/CONTRACT.md](bindings/CONTRACT.md) (SDK↔native ABI)
+
+</div>
