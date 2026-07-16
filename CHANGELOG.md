@@ -7,6 +7,52 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Added
+
+- **P8 — Packaging + install (partial)**:
+  - Version-compatibility guard (FR-P8-007): `witslog-store::CURRENT_SCHEMA_VERSION`
+    const + `Migrator::migrate()` refuses with an upgrade message
+    (`StoreError::SchemaVersionMismatch`) when a DB's `schema_version` is newer
+    than the binary supports, instead of silently corrupting/truncating.
+  - `witslog serve-mcp --print-mcp-config` (FR-P8-004): emits a generic
+    `mcpServers` JSON snippet (command/args/cwd) without opening a DB.
+  - `witslog uninstall [--purge]` (FR-P8-006): unlinks the running binary on
+    Unix; prints manual `del` instructions on Windows (a running exe can't
+    self-delete there). `--purge` also removes the project `.witslog/` dir and
+    the OS-appropriate global config dir.
+  - `witslog migrate` now restores the pre-migration `.bak` snapshot and aborts
+    cleanly on migration failure instead of leaving a half-migrated DB
+    (FR-P8-005 error path).
+  - `witslog doctor` prints the binary version and max supported schema
+    version, and surfaces (rather than swallows) a failed DB health check.
+  - `witslog --version` now works (`#[command(version)]` on the clap `Cli`).
+  - Install scripts `install/install.sh` / `install/install.ps1`: detect
+    OS/arch, download + verify SHA-256 checksum, place `witslog` on PATH.
+  - Cross-compile release workflow `.github/workflows/release.yml`: Linux
+    x86_64/aarch64, macOS x86_64/aarch64, Windows x86_64, checksummed
+    archives uploaded to GitHub Releases.
+  - Template Homebrew formula (`install/homebrew/witslog.rb`) and Scoop
+    manifest (`install/scoop/witslog.json`) — placeholder checksums until a
+    real release is cut.
+  - `docs/install.md`: install/upgrade/uninstall guide per OS.
+  - Tests: `witslog-store/src/migrate.rs` unit tests (fresh migrate, idempotent
+    re-run, refuse newer-than-binary schema); `witslog-cli/tests/p8_integration.rs`
+    feature/regression tests driving the real built binary
+    (`--print-mcp-config` shape + no-DB-required, schema-too-new refusal
+    end-to-end, normal round-trip still works); `witslog-cli` `uninstall_tests`
+    unit tests for the pure `purge_data_dirs` helper.
+  - `smoke_test` CI job in `.github/workflows/release.yml`: builds and runs
+    the real per-OS happy path (`--version`/`init`/`log`/`query`/`stats`/
+    `doctor`/`serve-mcp --print-mcp-config`/`serve-mcp --stdio` `tools/list`/
+    `uninstall --purge`) against the freshly built artifact on Linux, macOS,
+    and Windows runners; gates `publish` so nothing ships without a live pass.
+  - winget manifest and `.deb`/`.rpm` packaging deliberately not added:
+    `cargo install witslog-cli` and the npm/pip/composer SDK packages already
+    give cross-platform distribution pre-1.0, and there's no cut release yet
+    to package — revisit once one exists.
+
+### Changed
+
 - CI: version-gate on the Node SDK release workflow — only publishes to npm
   when `package.json` version differs from what's already on the registry.
 - CI: Node SDK release workflow now builds against the latest Node.js release.

@@ -1,5 +1,9 @@
-use crate::error::Result;
+use crate::error::{Result, StoreError};
 use rusqlite::Connection;
+
+/// Highest schema version this binary knows how to read/write (FR-P8-007).
+/// Bump alongside adding a new `migrate_000N_*` step.
+pub const CURRENT_SCHEMA_VERSION: i32 = 5;
 
 pub struct Migrator<'a> {
     conn: &'a Connection,
@@ -30,6 +34,15 @@ impl<'a> Migrator<'a> {
             .unwrap_or_else(|_| "0".to_string())
             .parse()
             .unwrap_or(0);
+
+        // Version-compatibility guard (FR-P8-007): a DB stamped by a newer
+        // binary carries schema features this binary doesn't understand.
+        // Refuse rather than silently truncating/corrupting on write.
+        if current_version > CURRENT_SCHEMA_VERSION {
+            return Err(StoreError::SchemaVersionMismatch(format!(
+                "database schema version {current_version} is newer than this binary supports (max {CURRENT_SCHEMA_VERSION}); upgrade witslog"
+            )));
+        }
 
         if current_version < 1 {
             self.migrate_0001_init()?;
@@ -287,5 +300,62 @@ impl<'a> Migrator<'a> {
         )?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_db_migrates_to_current_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut migrator = Migrator::new(&conn);
+        migrator.migrate().unwrap();
+
+        let version: i32 = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn re_running_migrate_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        Migrator::new(&conn).migrate().unwrap();
+        // Second run must not error or duplicate migrations rows.
+        Migrator::new(&conn).migrate().unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM migrations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, CURRENT_SCHEMA_VERSION as i64);
+    }
+
+    #[test]
+    fn schema_newer_than_binary_is_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        Migrator::new(&conn).migrate().unwrap();
+
+        // Simulate a DB stamped by a future binary.
+        conn.execute(
+            "UPDATE schema_meta SET value = ?1 WHERE key = 'schema_version'",
+            rusqlite::params![(CURRENT_SCHEMA_VERSION + 1).to_string()],
+        )
+        .unwrap();
+
+        let err = Migrator::new(&conn).migrate().unwrap_err();
+        match err {
+            StoreError::SchemaVersionMismatch(msg) => {
+                assert!(msg.contains("newer than this binary supports"));
+            }
+            other => panic!("expected SchemaVersionMismatch, got {:?}", other),
+        }
     }
 }

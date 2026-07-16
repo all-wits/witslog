@@ -1,0 +1,24 @@
+﻿{
+  "version": "0.1.0",
+  "description": "AI-native, SQLite-backed error intelligence framework",
+  "homepage": "https://github.com/all-wits/witslog",
+  "license": "Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/all-wits/witslog/releases/download/v0.1.0/witslog-windows-x86_64.zip",
+      "hash": "REPLACE_WITH_RELEASE_SHA256",
+      "extract_dir": ""
+    }
+  },
+  "bin": "witslog.exe",
+  "checkver": {
+    "github": "https://github.com/all-wits/witslog"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/all-wits/witslog/releases/download/v$version/witslog-windows-x86_64.zip"
+      }
+    }
+  }
+}

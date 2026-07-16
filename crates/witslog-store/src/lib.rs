@@ -7,7 +7,7 @@ pub mod writer;
 
 pub use conn::DbConnection;
 pub use error::{Result, StoreError};
-pub use migrate::Migrator;
+pub use migrate::{Migrator, CURRENT_SCHEMA_VERSION};
 pub use sink::StoreSink;
 pub use writer::{DeleteFilter, EventWriter};
 

@@ -6,6 +6,7 @@ use witslog_store::{DeleteFilter, Store};
 
 #[derive(Parser)]
 #[command(name = "witslog")]
+#[command(version)]
 #[command(about = "AI-native error logging framework", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -124,6 +125,18 @@ enum Commands {
         /// the server is otherwise strictly read-only (FR-P5-005).
         #[arg(long)]
         allow_write: bool,
+        /// Print a generic `mcpServers` JSON snippet for MCP clients and exit
+        /// (FR-P8-004). Does not open or require a DB.
+        #[arg(long)]
+        print_mcp_config: bool,
+    },
+    /// Remove the witslog binary and, with --purge, its data files (FR-P8-006).
+    Uninstall {
+        /// Also delete the resolved project `.witslog/` directory and the
+        /// global config directory. Without this flag only the binary is
+        /// targeted for removal.
+        #[arg(long)]
+        purge: bool,
     },
 }
 
@@ -240,8 +253,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stdio: _,
             attach,
             allow_write,
+            print_mcp_config,
         } => {
-            cmd_serve_mcp(&cli.db, attach, allow_write)?;
+            if print_mcp_config {
+                print_mcp_config_snippet()?;
+            } else {
+                cmd_serve_mcp(&cli.db, attach, allow_write)?;
+            }
+        }
+        Commands::Uninstall { purge } => {
+            cmd_uninstall(purge)?;
         }
     }
 
@@ -475,21 +496,176 @@ fn doctor() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = config.resolve_db_path(&cwd);
 
     println!("witslog doctor");
+    println!("  witslog version: {}", env!("CARGO_PKG_VERSION"));
+    println!("  max supported schema version: {}", witslog_store::CURRENT_SCHEMA_VERSION);
     println!("  cwd: {}", cwd.display());
     println!("  resolved db: {}", db_path.display());
     println!("  db exists: {}", db_path.exists());
 
     if db_path.exists() {
-        if let Ok(store) = Store::open_or_create(&db_path) {
-            println!("  ✓ database healthy");
-            let writer = witslog_store::EventWriter::new(store.conn());
-            if let Ok(dropped) = writer.dropped_count() {
-                println!("  dropped events (lifetime): {}", dropped);
+        match Store::open_or_create(&db_path) {
+            Ok(store) => {
+                println!("  ✓ database healthy");
+                let writer = witslog_store::EventWriter::new(store.conn());
+                if let Ok(dropped) = writer.dropped_count() {
+                    println!("  dropped events (lifetime): {}", dropped);
+                }
+            }
+            Err(e) => {
+                println!("  ✗ database check failed: {}", e);
             }
         }
     }
 
     Ok(())
+}
+
+/// FR-P8-004: emit a generic `mcpServers` snippet for MCP clients, launching
+/// `witslog serve-mcp --stdio` with `cwd` = the current project directory.
+/// Requires no DB — purely reflects how the running binary would be invoked.
+fn print_mcp_config_snippet() -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "witslog".to_string());
+
+    let snippet = serde_json::json!({
+        "mcpServers": {
+            "witslog": {
+                "command": exe,
+                "args": ["serve-mcp", "--stdio"],
+                "cwd": cwd.display().to_string()
+            }
+        }
+    });
+
+    println!("{}", serde_json::to_string_pretty(&snippet)?);
+
+    Ok(())
+}
+
+/// Global config dir per PLAN.md §7 OS conventions (defaults only, not error
+/// data): Linux `$XDG_CONFIG_HOME/witslog`, macOS `~/Library/Application
+/// Support/witslog`, Windows `%APPDATA%\witslog`.
+fn global_config_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join("witslog"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/witslog"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+            .map(|base| base.join("witslog"))
+    }
+}
+
+/// FR-P8-006: remove the witslog binary and, with `--purge`, its data files.
+/// Self-deleting a running executable is platform-dependent: Unix permits
+/// unlinking an open file (the process keeps running off the now-unlinked
+/// inode until it exits); Windows does not allow deleting a file that is
+/// memory-mapped/in-use by the running process, so on Windows we report the
+/// path and instruct the user to remove it after the process exits.
+fn cmd_uninstall(purge: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let exe = std::env::current_exe()?;
+
+    println!("witslog uninstall");
+    println!("  binary: {}", exe.display());
+
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(&exe)?;
+        println!("  ✓ binary removed");
+    }
+    #[cfg(windows)]
+    {
+        println!("  ⚠ cannot delete the running binary on Windows; remove it manually after exit:");
+        println!("    del \"{}\"", exe.display());
+    }
+
+    if purge {
+        let cwd = std::env::current_dir()?;
+        for removed in purge_data_dirs(&cwd.join(".witslog"), global_config_dir().as_deref())? {
+            println!("  ✓ removed: {}", removed.display());
+        }
+    } else {
+        println!("  (data files left in place; re-run with --purge to remove them)");
+    }
+
+    Ok(())
+}
+
+/// Pure helper (unit-testable without touching the running binary): removes
+/// `project_dir` and `global_dir` if present, returning the paths removed.
+fn purge_data_dirs(
+    project_dir: &std::path::Path,
+    global_dir: Option<&std::path::Path>,
+) -> std::io::Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+
+    if project_dir.exists() {
+        std::fs::remove_dir_all(project_dir)?;
+        removed.push(project_dir.to_path_buf());
+    }
+
+    if let Some(dir) = global_dir {
+        if dir.exists() {
+            std::fs::remove_dir_all(dir)?;
+            removed.push(dir.to_path_buf());
+        }
+    }
+
+    Ok(removed)
+}
+
+#[cfg(test)]
+mod uninstall_tests {
+    use super::*;
+
+    #[test]
+    fn purge_removes_existing_project_and_global_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project_dir = tmp.path().join(".witslog");
+        let global_dir = tmp.path().join("global-config");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&global_dir).unwrap();
+        std::fs::write(project_dir.join("witslog.db"), b"x").unwrap();
+
+        let removed = purge_data_dirs(&project_dir, Some(&global_dir)).unwrap();
+
+        assert_eq!(removed.len(), 2);
+        assert!(!project_dir.exists());
+        assert!(!global_dir.exists());
+    }
+
+    #[test]
+    fn purge_is_a_noop_when_nothing_exists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project_dir = tmp.path().join(".witslog");
+        let global_dir = tmp.path().join("global-config");
+
+        let removed = purge_data_dirs(&project_dir, Some(&global_dir)).unwrap();
+
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn purge_without_global_dir_only_removes_project() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project_dir = tmp.path().join(".witslog");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let removed = purge_data_dirs(&project_dir, None).unwrap();
+
+        assert_eq!(removed, vec![project_dir.clone()]);
+        assert!(!project_dir.exists());
+    }
 }
 
 fn cmd_stats(
@@ -915,8 +1091,15 @@ fn cmd_migrate(db_override: &Option<PathBuf>) -> Result<(), Box<dyn std::error::
     let backup_path = db_path.with_extension("bak");
     std::fs::copy(&db_path, &backup_path)?;
 
-    // Store::open_or_create runs pending migrations on open.
-    let _store = Store::open_or_create(&db_path)?;
+    // Store::open_or_create runs pending migrations on open. On failure
+    // (including the version-compat guard rejecting a too-new DB), restore
+    // the pre-migration snapshot rather than leaving a half-migrated file.
+    let store_result = Store::open_or_create(&db_path);
+    if let Err(e) = store_result {
+        std::fs::copy(&backup_path, &db_path)?;
+        std::fs::remove_file(&backup_path).ok();
+        return Err(format!("migration failed, restored backup: {}", e).into());
+    }
 
     let after = read_schema_version(&db_path).unwrap_or(0);
 

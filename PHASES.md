@@ -647,7 +647,43 @@ green (38 tests); perf doc at `docs/perf.md`.
 **Objective.** Make install a one-command experience on Linux/macOS/Windows with minimal
 manual config, plus upgrade/uninstall and MCP registration.
 
-**Status.** ⬜ todo.
+**Status.** 🟡 partial. Shipped: version-compatibility guard (FR-P8-007) —
+`witslog-store::migrate::CURRENT_SCHEMA_VERSION` const + `Migrator::migrate()`
+refuses with an upgrade message when a DB's `schema_version` exceeds it
+(`StoreError::SchemaVersionMismatch`); `witslog doctor` prints the binary
+version + max supported schema version and surfaces the failure instead of
+swallowing it. `witslog serve-mcp --print-mcp-config` (FR-P8-004) emits a
+generic `mcpServers` JSON snippet without needing a DB. `witslog uninstall
+[--purge]` (FR-P8-006): unlinks the running binary on Unix (prints manual
+`del` instructions on Windows, where a running exe can't self-delete), and
+with `--purge` removes the project `.witslog/` dir + OS-appropriate global
+config dir. `witslog migrate` now restores the pre-migration `.bak` snapshot
+and aborts cleanly on migration failure (FR-P8-005 error path). Install
+scripts (`install/install.sh`, `install/install.ps1`: detect OS/arch,
+download+verify checksum, place on PATH), a cross-compile release workflow
+(`.github/workflows/release.yml`: linux x86_64/aarch64, macOS x86_64/aarch64,
+windows x86_64, checksummed archives), a `smoke_test` job in that same
+workflow (build → per-OS happy path: `--version`/`init`/`log`/`query`/
+`stats`/`doctor`/`serve-mcp --print-mcp-config`/`serve-mcp --stdio tools/list`/
+`uninstall --purge` — gates `publish`), and template Homebrew/Scoop manifests
+(`install/homebrew/witslog.rb`, `install/scoop/witslog.json` — placeholder
+`REPLACE_WITH_RELEASE_SHA256` until a real release is cut) round out
+FR-P8-001/002/003. `cargo install witslog-cli` plus the npm/pip/composer SDK
+packages already give cross-platform distribution independent of a cut
+binary release, so winget/.deb/.rpm manifests were deliberately not added —
+low value pre-1.0 (no release to package yet) versus upkeep cost (drifting
+placeholder checksums). Revisit once a real release exists. Docs at
+`docs/install.md`. Tests: unit tests in
+`witslog-store/src/migrate.rs` (fresh-migrate, idempotent re-run, refuse
+newer-than-binary schema); `witslog-cli/tests/p8_integration.rs` (print-mcp-config
+shape + no-DB-required, schema-too-new refusal end-to-end via the real
+binary, normal round-trip still works); `witslog-cli/src/main.rs`
+`uninstall_tests` module (pure `purge_data_dirs` helper, unit-tested without
+touching the running test binary); `.github/workflows/release.yml`
+`smoke_test` job (per-OS live happy-path against the freshly built binary,
+gates `publish`). Remaining: exercising the pipeline against an actual cut
+tag/release (the workflow triggers on `v*.*.*` tags and hasn't been run for
+real yet).
 **Dependencies.** P4 (CLI), P5 (serve-mcp), P6 (SDKs).
 **Complexity.** M.
 
@@ -689,11 +725,11 @@ manual config, plus upgrade/uninstall and MCP registration.
 | Schema newer than binary | version guard | refuse + upgrade instructions |
 
 **TODO checklist.**
-- [ ] `cargo-dist` (or equivalent) release workflow: cross-compile Linux/macOS/Windows.
-- [ ] `install/install.sh` + `install/install.ps1` (detect, download, verify, PATH).
-- [ ] Homebrew tap, Scoop manifest, winget manifest, `.deb`/`.rpm` via `nfpm`.
-- [ ] `--print-mcp-config` in `serve-mcp`; `uninstall` command; version-compat matrix + guard.
-- [ ] `docs/install.md` per-OS; CI smoke test that installs + runs the happy path.
+- [x] Release workflow: cross-compile Linux/macOS/Windows (`.github/workflows/release.yml`).
+- [x] `install/install.sh` + `install/install.ps1` (detect, download, verify, PATH).
+- [x] Homebrew formula + Scoop manifest templates (`install/homebrew/`, `install/scoop/`). winget/`.deb`/`.rpm` intentionally skipped: `cargo install witslog-cli` + npm/pip/composer SDK packages already cover cross-platform distribution pre-1.0; revisit once a real release exists.
+- [x] `--print-mcp-config` in `serve-mcp`; `uninstall` command; version-compat guard (`CURRENT_SCHEMA_VERSION` + refuse-if-newer).
+- [x] `docs/install.md` per-OS. CI `smoke_test` job (per-OS init/log/query/serve-mcp/doctor/uninstall happy path against the freshly built binary, gates `publish`) — still needs a real tag push to exercise end-to-end.
 
 **Verification.** In a clean container/VM per OS: run installer → `witslog init/log/query/
 serve-mcp` all succeed; upgrade path migrates; downgrade guard refuses.

@@ -58,10 +58,20 @@ gate + per-language SDK↔CLI readback + argv-mitigation lock — see Gotchas).
 
 ### Testing
 
-- **Unit**: in module `#[cfg(test)]` blocks (e.g., `crates/witslog-core/src/taxonomy.rs`).
-- **Integration**: `crates/witslog-store/tests/pN_integration.rs` (e.g., `p1_integration.rs`, `p2_integration.rs`). Mirrors phase.
-- **Run**: `cargo test -p witslog-core taxonomy` (unit by module name); `cargo test --test p2_integration` (integration by file).
+**Every phase's implementation work must ship with unit tests, regression tests, and feature
+tests before it's called done** — not just "it compiles" or "it looks right by inspection":
+- **Unit**: pure-logic coverage in module `#[cfg(test)]` blocks (e.g., `crates/witslog-core/src/taxonomy.rs`, `crates/witslog-store/src/migrate.rs`).
+- **Regression**: a test that pins a specific bug/edge-case that was fixed or a guard that was added (e.g. `migrate::tests::schema_newer_than_binary_is_refused`), named so a future revert would fail it.
+- **Feature/integration**: `crates/witslog-store/tests/pN_integration.rs` (e.g., `p1_integration.rs`, `p2_integration.rs`) or, for CLI-surfaced behavior, `crates/witslog-cli/tests/pN_integration.rs` (e.g. `p8_integration.rs`) driving the real built binary via `std::process::Command` + `env!("CARGO_BIN_EXE_witslog")`. Mirrors phase.
+- **Run**: `cargo test -p witslog-core taxonomy` (unit by module name); `cargo test --test p2_integration` (integration by file); `cargo test --workspace` before calling any phase done.
 - **SDK bindings**: per-language unit tests (`bindings/python/tests` via `py -m pytest`, `bindings/node/test` via `node --test`, `bindings/php/tests` via `phpunit`) cover marshalling + the FFI error table (missing lib, ABI mismatch, write error). Cross-language regression: `bindings/e2e/run.ps1` — gates workspace `cargo test`, SDK→CLI readback (message+tags cross the ABI), and the argv-mitigation lock in one pipeline; run before calling P6 changes done.
+- **Don't test-spawn the real dev binary destructively**: a test that would delete/rename `target/debug/witslog(.exe)` (e.g. exercising `uninstall`'s binary-removal path) breaks every other test/build sharing that binary. Copy it to a temp path first, or refactor the destructive bit into a pure helper and unit-test that instead (see `purge_data_dirs` / `uninstall_tests` in `witslog-cli/src/main.rs`).
+
+### Changelog discipline
+
+- **Update `CHANGELOG.md` in the same change that lands the feature/fix** — not as an afterthought at release time. Add entries under `## [Unreleased]`, grouped by `### Added` / `### Changed` / `### Fixed` / `### Removed` (Keep a Changelog format, already in use here).
+- Write entries for a future reader who wasn't in this session: name the phase/FR-ID, the files/commands touched, and *why* if it isn't obvious (mirrors the style already in `[0.1.0]`).
+- On an actual version cut, move `[Unreleased]` content under a new dated `## [x.y.z] — YYYY-MM-DD` heading rather than deleting history.
 
 ### Error Handling
 
@@ -78,7 +88,7 @@ gate + per-language SDK↔CLI readback + argv-mitigation lock — see Gotchas).
 - ✅ **P5**: MCP server — witslog-mcp crate (all 12 tools, JSON-RPC stdio transport, schema validation, statement timeout), wired into CLI as `witslog serve-mcp [--stdio] [--attach] [--allow-write]`, conformance test (`p5_integration.rs`) green.
 - ✅ **P6**: SDK bindings. Provider/runtime landed (`witslog-runtime`); C ABI extended additively with `context`/`tags`/`metadata` on `witslog_log` + a `witslog_abi_version()` handshake. Three framework-agnostic SDKs under `bindings/` — Python (`ctypes`, 0 deps) + FastAPI/Django/Flask, Node (`koffi`) + Express, PHP (`ext-ffi`) + Laravel provider — over the shared JSON contract (`bindings/CONTRACT.md`). Per-language unit tests + cross-language e2e (`bindings/e2e/run.ps1`, SDK→CLI readback) green.
 - ✅ **P7**: Perf + hardening. Criterion bench suite (`bench/`: write throughput, buffered-log latency, search latency, FTS index-build cost), concurrency harness (`witslog-store/tests/p7_concurrency.rs`, 8 independent connections on one DB, zero loss + `integrity_check=ok`), load harness (`p7_load.rs`, scales via `WITSLOG_LOAD_TEST_ROWS`), memory script (`scripts/measure_memory.ps1`), CI (`.github/workflows/ci.yml`) with a bench-regression gate (`scripts/check_bench_regression.ps1`). Docs: `docs/perf.md`.
-- ⬜ **P8**: Packaging + install (cross-compile, release).
+- 🟡 **P8**: Packaging + install. Version-compat guard (`witslog-store::CURRENT_SCHEMA_VERSION`, refuses newer-than-binary schema), `serve-mcp --print-mcp-config`, `uninstall [--purge]`, migrate `.bak` restore-on-failure, install scripts (`install/install.sh`/`.ps1`), release workflow with a `smoke_test` job (`.github/workflows/release.yml`: builds per OS, runs the real init/log/query/serve-mcp/doctor/uninstall happy path, gates `publish`), Homebrew/Scoop manifest templates, `docs/install.md`. winget/`.deb`/`.rpm` intentionally out of scope — `cargo install`/npm/pip/composer already cover cross-platform distribution pre-1.0. Missing: exercising the workflow against a real cut tag.
 - ⬜ **P9**: Extensibility + security (plugins, encryption, audit).
 
 **Critical path**: P0 → P3 → P5 → P8. P1/P2 parallelizable.
@@ -129,4 +139,4 @@ gate + per-language SDK↔CLI readback + argv-mitigation lock — see Gotchas).
 
 ---
 
-Last updated: 2026-07-16. Reflect code reality, not aspirational state.
+Last updated: 2026-07-17. Reflect code reality, not aspirational state.

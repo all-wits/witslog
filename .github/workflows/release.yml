@@ -1,0 +1,168 @@
+name: Release binaries
+
+# Cross-compiles the `witslog` CLI for Linux/macOS/Windows and publishes
+# checksummed archives to a GitHub Release (FR-P8-001, FR-P8-003).
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_os: linux
+            asset_arch: x86_64
+            archive: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset_os: linux
+            asset_arch: aarch64
+            archive: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_os: macos
+            asset_arch: x86_64
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_os: macos
+            asset_arch: aarch64
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_os: windows
+            asset_arch: x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compile linker (linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release -p witslog-cli --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/witslog dist/witslog
+          tar -czf witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz -C dist witslog
+          shasum -a 256 witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz > witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz.sha256
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/witslog.exe dist/witslog.exe
+          Compress-Archive -Path dist/witslog.exe -DestinationPath witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.zip
+          $hash = (Get-FileHash witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.zip" | Out-File -Encoding ascii witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+          path: |
+            witslog-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.*
+
+  smoke_test:
+    # FR-P8-002/FR-P8-003 acceptance criteria: "clean install → init → log →
+    # serve-mcp all succeed" per OS. Runs against the just-built artifact (not
+    # a downloaded release — this project has no cut release yet) so every
+    # push to a release tag is checked before anything is published.
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: witslog-linux-x86_64
+            archive: witslog-linux-x86_64.tar.gz
+          - os: macos-latest
+            artifact: witslog-macos-x86_64
+            archive: witslog-macos-x86_64.tar.gz
+          - os: windows-latest
+            artifact: witslog-windows-x86_64
+            archive: witslog-windows-x86_64.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dl
+
+      - name: Extract + smoke test (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p smoke && tar -xzf "dl/${{ matrix.archive }}" -C smoke
+          chmod +x smoke/witslog
+          BIN=$(pwd)/smoke/witslog
+          WORK=$(mktemp -d)
+          cd "$WORK"
+
+          "$BIN" --version
+          "$BIN" init .
+          "$BIN" log smoketest "hello from CI" --severity error
+          "$BIN" query "hello*"
+          "$BIN" stats
+          "$BIN" doctor
+          "$BIN" serve-mcp --print-mcp-config
+          echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$BIN" serve-mcp --stdio | grep -q '"tools"'
+          "$BIN" uninstall --purge
+
+      - name: Extract + smoke test (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path smoke | Out-Null
+          Expand-Archive -Path "dl/${{ matrix.archive }}" -DestinationPath smoke -Force
+          $bin = (Resolve-Path "smoke/witslog.exe").Path
+          $work = Join-Path $env:TEMP ([System.Guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          Set-Location $work
+
+          & $bin --version
+          & $bin init .
+          & $bin log smoketest "hello from CI" --severity error
+          & $bin query "hello*"
+          & $bin stats
+          & $bin doctor
+          & $bin serve-mcp --print-mcp-config
+          '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | & $bin serve-mcp --stdio | Select-String '"tools"' | Out-Null
+          & $bin uninstall --purge
+
+  publish:
+    needs: [build, smoke_test]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

@@ -37,12 +37,17 @@ query.
 ### CLI (Rust)
 
 ```bash
-# Via installer (coming in P8)
-curl -fsSL https://witslog.dev/install.sh | sh
+# Linux/macOS installer (detects OS/arch, verifies checksum, places on PATH)
+curl -fsSL https://raw.githubusercontent.com/all-wits/witslog/main/install/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/all-wits/witslog/main/install/install.ps1 | iex
 
 # From source (dev)
 cargo install --path crates/witslog-cli
 ```
+
+See [docs/install.md](docs/install.md) for package-manager options, upgrade, and uninstall.
 
 ### SDKs
 
@@ -78,6 +83,7 @@ witslog log app "connection timeout" --error-code ETIMEDOUT --severity error
 witslog query "timeout*" --severity error
 witslog stats
 witslog serve-mcp --stdio   # expose the log to an MCP-compatible AI assistant
+witslog doctor              # binary version, max supported schema, DB health
 ```
 
 ### From an app (Node example)
@@ -94,8 +100,8 @@ See [bindings/node](bindings/node), [bindings/python](bindings/python), and
 
 ## 🧭 Status
 
-Pre-1.0. Core logging, storage, taxonomy, search, MCP server, and SDKs are shipped and tested;
-performance hardening and packaging are next.
+Pre-1.0. Core logging, storage, taxonomy, search, MCP server, SDKs, and perf hardening are
+shipped and tested; packaging (P8) is in progress and extensibility/security (P9) is next.
 
 | Phase | What | Status |
 |-------|------|--------|
@@ -106,8 +112,8 @@ performance hardening and packaging are next.
 | P4 | CLI utilities (export/import/prune/archive/backup/...) | 🟡 missing global `--json` |
 | P5 | MCP server (12 tools, JSON-RPC/stdio) | ✅ |
 | P6 | SDK bindings (Node/Python/PHP + framework adapters) | ✅ |
-| P7 | Perf benches + concurrency hardening | ⬜ |
-| P8 | Packaging + cross-platform install | ⬜ |
+| P7 | Perf benches + concurrency hardening | ✅ |
+| P8 | Packaging + cross-platform install | 🟡 install scripts + release CI + smoke test shipped; not yet exercised against a real cut release |
 | P9 | Extensibility (plugins) + security (encryption, audit) | ⬜ |
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes and [PHASES.md](PHASES.md) for the detailed
@@ -147,14 +153,20 @@ Runs as a stdio JSON-RPC server. Any MCP-compatible client (Claude, other LLMs) 
 `similar_errors` · `list_categories` · `statistics` · `timeline` · `top_failures` ·
 `list_traces` · `search_all` (opt-in federation) · `witslog_delete` (gated, write)
 
-MCP client registration snippet:
+MCP client registration snippet — generate it directly (fills in the resolved
+binary path and project `cwd`):
+
+```bash
+witslog serve-mcp --print-mcp-config
+```
 
 ```json
 {
   "mcpServers": {
     "witslog": {
       "command": "witslog",
-      "args": ["serve-mcp", "--stdio"]
+      "args": ["serve-mcp", "--stdio"],
+      "cwd": "/path/to/your/project"
     }
   }
 }
