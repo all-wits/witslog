@@ -46,6 +46,14 @@ independently at pre-1.0 — this file tracks the project as a whole.
     `doctor`/`serve-mcp --print-mcp-config`/`serve-mcp --stdio` `tools/list`/
     `uninstall --purge`) against the freshly built artifact on Linux, macOS,
     and Windows runners; gates `publish` so nothing ships without a live pass.
+    Confirmed green end-to-end via `workflow_dispatch` — all 5 `build` matrix
+    legs (linux x86_64/aarch64, macos x86_64/aarch64, windows x86_64) and all
+    3 `smoke_test` legs passed on real GitHub-hosted runners.
+  - Fixed: install scripts/docs/Homebrew-Scoop templates pointed at the wrong
+    GitHub org (`witslog/witslog` instead of the actual `all-wits/witslog`
+    remote) — would have 404'd for every real download. Corrected across
+    `install/install.sh`, `install/install.ps1`, `docs/install.md`,
+    `install/homebrew/witslog.rb`, `install/scoop/witslog.json`, `README.md`.
   - winget manifest and `.deb`/`.rpm` packaging deliberately not added:
     `cargo install witslog-cli` and the npm/pip/composer SDK packages already
     give cross-platform distribution pre-1.0, and there's no cut release yet

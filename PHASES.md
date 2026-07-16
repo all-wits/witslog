@@ -647,7 +647,9 @@ green (38 tests); perf doc at `docs/perf.md`.
 **Objective.** Make install a one-command experience on Linux/macOS/Windows with minimal
 manual config, plus upgrade/uninstall and MCP registration.
 
-**Status.** 🟡 partial. Shipped: version-compatibility guard (FR-P8-007) —
+**Status.** 🟡 mostly done, verified green on GitHub Actions (cross-compile matrix +
+`smoke_test` all passing on real Linux/macOS/Windows runners). Shipped: version-compatibility
+guard (FR-P8-007) —
 `witslog-store::migrate::CURRENT_SCHEMA_VERSION` const + `Migrator::migrate()`
 refuses with an upgrade message when a DB's `schema_version` exceeds it
 (`StoreError::SchemaVersionMismatch`); `witslog doctor` prints the binary
@@ -681,9 +683,12 @@ binary, normal round-trip still works); `witslog-cli/src/main.rs`
 `uninstall_tests` module (pure `purge_data_dirs` helper, unit-tested without
 touching the running test binary); `.github/workflows/release.yml`
 `smoke_test` job (per-OS live happy-path against the freshly built binary,
-gates `publish`). Remaining: exercising the pipeline against an actual cut
-tag/release (the workflow triggers on `v*.*.*` tags and hasn't been run for
-real yet).
+gates `publish`) — confirmed green via `workflow_dispatch` on real Linux/
+macOS/Windows GitHub-hosted runners (all 5 `build` matrix legs + all 3
+`smoke_test` legs passed). Remaining: cutting an actual `v*.*.*` tag to
+exercise the `publish` job and produce a real GitHub Release (only guarded
+by `if: startsWith(github.ref, 'refs/tags/v')`, deliberately not done yet
+to avoid a throwaway v0.1.0 release).
 **Dependencies.** P4 (CLI), P5 (serve-mcp), P6 (SDKs).
 **Complexity.** M.
 
@@ -729,7 +734,7 @@ real yet).
 - [x] `install/install.sh` + `install/install.ps1` (detect, download, verify, PATH).
 - [x] Homebrew formula + Scoop manifest templates (`install/homebrew/`, `install/scoop/`). winget/`.deb`/`.rpm` intentionally skipped: `cargo install witslog-cli` + npm/pip/composer SDK packages already cover cross-platform distribution pre-1.0; revisit once a real release exists.
 - [x] `--print-mcp-config` in `serve-mcp`; `uninstall` command; version-compat guard (`CURRENT_SCHEMA_VERSION` + refuse-if-newer).
-- [x] `docs/install.md` per-OS. CI `smoke_test` job (per-OS init/log/query/serve-mcp/doctor/uninstall happy path against the freshly built binary, gates `publish`) — still needs a real tag push to exercise end-to-end.
+- [x] `docs/install.md` per-OS. CI `smoke_test` job (per-OS init/log/query/serve-mcp/doctor/uninstall happy path against the freshly built binary, gates `publish`) — confirmed green on real GitHub Actions runners (Linux/macOS/Windows). Only a real `v*.*.*` tag push (to exercise `publish`) remains.
 
 **Verification.** In a clean container/VM per OS: run installer → `witslog init/log/query/
 serve-mcp` all succeed; upgrade path migrates; downgrade guard refuses.

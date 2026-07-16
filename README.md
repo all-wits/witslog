@@ -113,7 +113,7 @@ shipped and tested; packaging (P8) is in progress and extensibility/security (P9
 | P5 | MCP server (12 tools, JSON-RPC/stdio) | ✅ |
 | P6 | SDK bindings (Node/Python/PHP + framework adapters) | ✅ |
 | P7 | Perf benches + concurrency hardening | ✅ |
-| P8 | Packaging + cross-platform install | 🟡 install scripts + release CI + smoke test shipped; not yet exercised against a real cut release |
+| P8 | Packaging + cross-platform install | 🟡 install scripts + release CI + smoke test shipped, verified green on GitHub Actions; no cut release yet |
 | P9 | Extensibility (plugins) + security (encryption, audit) | ⬜ |
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes and [PHASES.md](PHASES.md) for the detailed
