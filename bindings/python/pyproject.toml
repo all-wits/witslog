@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "witslog"
+version = "0.1.0"
+description = "Framework-agnostic Python SDK for witslog structured error logging"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+authors = [{ name = "witslog team" }]
+keywords = ["logging", "errors", "sqlite", "observability"]
+# Core has NO third-party runtime dependencies (ctypes is stdlib).
+
+[project.optional-dependencies]
+fastapi = ["fastapi", "starlette"]
+flask = ["flask"]
+django = ["django"]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["witslog", "witslog.frameworks"]
+
+[tool.setuptools.package-data]
+witslog = ["_libs/*/*"]

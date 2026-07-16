@@ -487,9 +487,15 @@ return valid shapes; invalid params → `-32602`.
 **Objective.** Provide idiomatic, thin language wrappers (Python, Node) over the shipped C
 ABI so apps in those languages log structured events without touching FFI details.
 
-**Status.** 🟡 partial. C ABI (`witslog_log/resolve/delete/free_string`) shipped (P0);
-the ambient **Provider/runtime** landed (`witslog-runtime` crate + `witslog_init`/`witslog_flush`/
-`witslog_shutdown`); no language wrappers yet.
+**Status.** ✅ done. C ABI (`witslog_log/resolve/delete/free_string`) shipped (P0); the ambient
+**Provider/runtime** landed (`witslog-runtime` + `witslog_init`/`witslog_flush`/`witslog_shutdown`);
+the C ABI was extended additively with `context`/`tags`/`metadata` on `witslog_log` (FR-P6-006) and a
+`witslog_abi_version()` handshake. **All three language SDKs shipped** under `bindings/` — Python
+(`ctypes`, 0 deps) + FastAPI/Django/Flask adapters, Node (`koffi`) + Express adapter, PHP (`ext-ffi`)
++ Laravel service provider — each a framework-agnostic core (`error/warn/info/exception/log`,
+`init/flush/shutdown`, host-excepthook capture) over the shared JSON contract (`bindings/CONTRACT.md`).
+Unit tests per language (marshalling + the FR-P6 error table) and a cross-language e2e driver
+(`bindings/e2e/run.ps1`: SDK writes → CLI reads back, incl. `tags` crossing the ABI) all green.
 **Dependencies.** P0 (FFI-core), P1 (enrich/redact/configure surface).
 **Complexity.** M.
 

@@ -3,8 +3,21 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 use witslog_core::{AsyncBuffer, BufferConfig, EnrichConfig, EventBuilder, Redactor, Severity};
 use witslog_store::{DeleteFilter, Store, StoreSink};
+
+/// Version of the JSON contract this native library speaks. SDK wrappers call
+/// `witslog_abi_version()` at load time and compare against the version they were
+/// built for, so a native/SDK mismatch is detected rather than silently mis-parsed.
+/// Bump on any breaking change to the `witslog_log` / `witslog_configure` payloads.
+const WITSLOG_ABI_VERSION: i32 = 1;
+
+/// Return the JSON-contract version this library implements. Stable, side-effect-free.
+#[no_mangle]
+pub extern "C" fn witslog_abi_version() -> i32 {
+    WITSLOG_ABI_VERSION
+}
 
 fn resolve_db_path() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -188,6 +201,9 @@ struct LogRequest {
     stacktrace: Option<String>,
     correlation_id: Option<String>,
     parent_event_id: Option<String>,
+    context: Option<JsonValue>,
+    tags: Option<Vec<String>>,
+    metadata: Option<JsonValue>,
 }
 
 /// Log an event from a JSON payload. Returns the inserted row id on the
@@ -240,6 +256,15 @@ pub unsafe extern "C" fn witslog_log(json_ptr: *const c_char) -> i64 {
     }
     if let Some(p) = req.parent_event_id {
         builder = builder.parent_event_id(p);
+    }
+    if let Some(c) = req.context {
+        builder = builder.context(c);
+    }
+    if let Some(t) = req.tags {
+        builder = builder.tags(t);
+    }
+    if let Some(m) = req.metadata {
+        builder = builder.metadata(m);
     }
 
     let event = builder
@@ -585,6 +610,80 @@ mod tests {
         let json = CString::new(r#"{"redact":{"custom_patterns":["(unclosed"]}}"#).unwrap();
         let result = unsafe { witslog_configure(json.as_ptr()) };
         assert_eq!(result, -2);
+    }
+
+    #[test]
+    fn configure_argv_false_suppresses_argv_capture() {
+        // Regression lock: SDKs must be able to fully close the argv/secret-exposure
+        // gap (a secret typed as a bare CLI arg won't match redaction patterns) by
+        // disabling argv enrichment via witslog_configure/witslog_init. This proves
+        // the mitigation actually works end-to-end through the C ABI, not just that
+        // the config field exists.
+        with_tmp_cwd(|| unsafe {
+            let configure_json = CString::new(r#"{"enrich":{"argv":false}}"#).unwrap();
+            assert_eq!(witslog_configure(configure_json.as_ptr()), 0);
+
+            let log_json =
+                CString::new(r#"{"application":"app","message":"argv disabled test"}"#).unwrap();
+            let row_id = witslog_log(log_json.as_ptr());
+            assert!(row_id >= 0);
+
+            let store = Store::open_or_create(resolve_db_path()).unwrap();
+            let context: Option<String> = store
+                .conn()
+                .conn()
+                .query_row("SELECT context FROM events LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            let context = context.unwrap_or_default();
+            assert!(
+                !context.contains("\"argv\""),
+                "argv must be absent from context when enrich.argv=false, got: {context}"
+            );
+            // Other enrichment (pid/cwd) still applies — only argv was disabled.
+            assert!(context.contains("\"pid\""));
+
+            // Reset global config so later tests in this process see defaults.
+            let reset_json = CString::new(r#"{"enrich":{"argv":true}}"#).unwrap();
+            witslog_configure(reset_json.as_ptr());
+        });
+    }
+
+    #[test]
+    fn abi_version_is_current() {
+        assert_eq!(witslog_abi_version(), WITSLOG_ABI_VERSION);
+        assert_eq!(witslog_abi_version(), 1);
+    }
+
+    #[test]
+    fn log_persists_context_tags_and_metadata() {
+        with_tmp_cwd(|| unsafe {
+            let log_json = CString::new(
+                r#"{"application":"app","message":"ctx event","severity":"error",
+                    "context":{"request_id":"req-42","pid":7},
+                    "tags":["alpha","beta"],
+                    "metadata":{"k":"v"}}"#,
+            )
+            .unwrap();
+            let row_id = witslog_log(log_json.as_ptr());
+            assert!(row_id >= 0);
+
+            let store = Store::open_or_create(resolve_db_path()).unwrap();
+            let (context, tags, metadata): (String, String, String) = store
+                .conn()
+                .conn()
+                .query_row(
+                    "SELECT context, tags, metadata FROM events LIMIT 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+
+            // context/metadata round-trip as JSON objects; tags as a JSON array.
+            assert!(context.contains("\"request_id\""));
+            assert!(context.contains("req-42"));
+            assert!(tags.contains("alpha") && tags.contains("beta"));
+            assert!(metadata.contains("\"k\"") && metadata.contains("\"v\""));
+        });
     }
 
     #[cfg(unix)]

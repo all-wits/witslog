@@ -1,0 +1,127 @@
+# witslog SDK ↔ native ABI contract
+
+All language SDKs (Python, Node, PHP) are thin wrappers over the same C ABI exported by the
+`witslog-ffi` crate (`witslog_ffi.dll` / `libwitslog_ffi.so` / `libwitslog_ffi.dylib`). This
+file is the single source of truth every SDK core marshals against.
+
+## Contract version
+
+**Current version: `1`.**
+
+The native library exports `int32 witslog_abi_version(void)`. Every SDK core calls it once at
+load time and compares against the version it was built for. On mismatch the SDK raises its
+`WitslogContractError` (naming expected vs. actual) rather than sending a payload the native
+side may mis-parse. Bump `WITSLOG_ABI_VERSION` in `crates/witslog-ffi/src/lib.rs` on any
+breaking change to the payloads below.
+
+## Exported functions
+
+| Symbol | Signature (C) | Meaning |
+|---|---|---|
+| `witslog_abi_version` | `int32 (void)` | Contract version (see above). |
+| `witslog_configure` | `int32 (const char* json)` | Set enrich/redact/buffer for this process. `0` ok, `-1` bad JSON, `-2` bad redact regex. |
+| `witslog_init` | `int32 (const char* json_or_null)` | Mount the process runtime + Rust panic hook. Applies `witslog_configure` payload first (null = defaults). `0`/`-1`/`-2` as above. |
+| `witslog_log` | `int64 (const char* json)` | Log one event (payload below). Returns the DB rowid on the sync path, `0` when buffering is enabled (rowid not yet known), `-1` on error. Never panics. |
+| `witslog_resolve` | `int32 (const char* event_id)` | Mark an event resolved. `0`/`-1`. |
+| `witslog_delete` | `char* (const char* filter_json)` | Delete stale/resolved events. Returns a heap JSON string `{"deleted_count":N,"deleted_ids":[...]}` (free via `witslog_free_string`) or null on error. |
+| `witslog_flush` | `int32 (void)` | Drain the async buffer (joins the flush thread). Idempotent. Call before exit. |
+| `witslog_shutdown` | `int32 (void)` | Un-mount: flush + tear down. Alias of `witslog_flush` today. |
+| `witslog_free_string` | `void (char*)` | Free a string returned by `witslog_delete`. |
+
+All string parameters are NUL-terminated UTF-8. The caller owns the input buffers; the library
+owns (and frees, via `witslog_free_string`) any `char*` it returns.
+
+## `witslog_log` payload (JSON object)
+
+| Field | Type | Req | Notes |
+|---|---|---|---|
+| `application` | string | ✅ | app name |
+| `message` | string | ✅ | error message (redacted before persist) |
+| `severity` | string | | `trace\|debug\|info\|warn\|error\|critical\|fatal` (default `error`) |
+| `version` | string | | app version / build id |
+| `environment` | string | | `prod\|staging\|dev\|ci` |
+| `category` | string | | canonical taxonomy leaf; when set, auto-classify is skipped |
+| `error_code` | string | | app-defined stable code |
+| `exception` | string | | exception/class type name |
+| `stacktrace` | string | | raw trace; normalized into `stack_norm` |
+| `correlation_id` | string | | request/trace id |
+| `parent_event_id` | string | | caused-by parent event id |
+| `context` | object | | structured context; redacted; hot keys promoted to columns |
+| `tags` | string[] | | free-form tags |
+| `metadata` | object | | free-form metadata; redacted |
+
+`context`, `tags`, `metadata` are passed through unchanged (FR-P6-006).
+
+## `witslog_init` / `witslog_configure` payload (JSON object)
+
+```json
+{
+  "enrich": { "hostname": true, "pid": true, "cwd": true, "argv": true,
+              "git_commit": true, "env_allowlist": ["PATH"] },
+  "redact": { "custom_patterns": ["MY_TOKEN_[A-Z0-9]+"] },
+  "buffer": { "enabled": false, "batch_size": 50, "flush_interval_ms": 1000,
+              "queue_capacity": 10000 }
+}
+```
+
+All keys optional; omitted keys keep their current value.
+
+## `witslog_delete` filter payload (JSON object)
+
+```json
+{ "event_id": "...", "fingerprint": "...", "resolved_before": "RFC3339", "force": false }
+```
+
+Only deletes events with `resolved_at IS NOT NULL` unless `force:true`.
+
+## Native library location (locator, identical in every SDK)
+
+Resolved in order:
+
+1. `WITSLOG_LIB` environment variable — explicit path to the shared library (used in dev/CI;
+   point it at `target/release/witslog_ffi.dll`).
+2. Package-bundled `_libs/<platform>/witslog_ffi.{dll,so,dylib}`, where `<platform>` is e.g.
+   `win32-x64`, `linux-x64`, `darwin-arm64`.
+3. The OS default loader search path.
+
+On failure the SDK raises `WitslogLibraryError` listing the paths it tried.
+
+## DB resolution
+
+The native library resolves the target DB by walking up from the current working directory for a
+`.witslog/` marker (same as the CLI). An SDK-hosted app therefore logs into its own project DB
+automatically — just run from the project directory, or `witslog init` it first.
+
+## Security note: argv enrichment vs. secrets
+
+Enrichment defaults `argv: true` (see `EnrichConfig::default()` in
+`crates/witslog-core/src/enrich.rs`), so the **full process command line** is captured into
+`context.argv` on every event by default. Built-in + custom redaction (`redact_json`) recurses
+into `argv` and redacts anything matching a known secret *pattern* (Bearer tokens, `api_key=`,
+`password=`, `AWS_*`, connection strings) — but a secret passed as a **bare CLI argument** that
+doesn't match one of those shapes (e.g. `myapp --token abc123secret`) is not pattern-matched and
+will be persisted verbatim.
+
+If your app may receive secrets via CLI arguments, close this exposure explicitly:
+
+```json
+{ "enrich": { "argv": false } }
+```
+
+passed to `witslog_init`/`witslog_configure` (or the SDK's `init(config)`). This is proven to
+fully suppress `argv` capture end-to-end — see `witslog-ffi::configure_argv_false_suppresses_argv_capture`
+and the equivalent regression test in each SDK's unit test suite (`test_init_forwards_argv_disable_config`
+/ `init forwards argv-disable config unchanged` / `testInitForwardsArgvDisableConfig`). Other
+enrichment (`pid`, `cwd`, `git_commit`, `hostname`) is unaffected and can be disabled independently
+the same way.
+
+## Mount / flush lifecycle
+
+`tracing` (the Rust ambient capture) does **not** cross the ABI. Each SDK:
+
+1. calls `witslog_init` once at startup (installs the Rust panic hook, applies config), and
+2. registers the **host language's** uncaught-exception hook (Python `sys.excepthook`, Node
+   `process.on('uncaughtException')`, PHP `set_exception_handler`) to route those to
+   `witslog_log`, and
+3. calls `witslog_shutdown` before process exit (atexit / shutdown handler), since the C ABI has
+   no RAII drop to flush a buffer.

@@ -26,10 +26,18 @@ Workspace in `crates/`. Built crates:
 
 **Not yet built**: witslog-plugin (extensibility, P9).
 
+**SDK bindings** (P6, outside `crates/`): `bindings/python` (ctypes, 0 deps) + `bindings/node` (koffi) +
+`bindings/php` (ext-ffi) — each a framework-agnostic core (`error/warn/info/exception/log`,
+`init/flush/shutdown`, host-excepthook capture) plus thin adapters (`bindings/python/witslog/frameworks/{fastapi,django,flask}.py`,
+`bindings/node/frameworks/express.js`, `bindings/php/src/Laravel/WitslogServiceProvider.php`).
+Contract: **bindings/CONTRACT.md**. e2e/regression driver: `bindings/e2e/run.ps1` (workspace test
+gate + per-language SDK↔CLI readback + argv-mitigation lock — see Gotchas).
+
 ## Specs & Docs
 
 - **PLAN.md**: Authoritative design doc. Architecture, schema (§3), FTS design (§4), MCP spec (§5), crate map (§6), install/bootstrap (§7), roadmap (§8-10). Read first for "how should X work".
-- **PHASES.md**: Detailed per-phase engineering. Each phase has EARS requirements, acceptance criteria, error-handling table, TODO checklist, verification recipe. Read before implementing a phase. **Current phase: P6 (SDK bindings) — specs at PHASES.md §P6**.
+- **PHASES.md**: Detailed per-phase engineering. Each phase has EARS requirements, acceptance criteria, error-handling table, TODO checklist, verification recipe. Read before implementing a phase. **P6 (SDK bindings) shipped — specs at PHASES.md §P6**.
+- **bindings/CONTRACT.md**: SDK↔native ABI contract (single source every language SDK marshals against) — exported functions, `witslog_log` JSON payload fields, ABI-version handshake (`witslog_abi_version`), native-lib locator order, DB resolution, mount/flush lifecycle, and the argv/secret-exposure security note. Read before touching `witslog-ffi` or any `bindings/*` SDK.
 - **LAST_SESSION_PLAN.md** (if present): Refined implementation plan from prior session. May be more detailed than PHASES.md for the current phase.
 
 ## Conventions
@@ -53,6 +61,7 @@ Workspace in `crates/`. Built crates:
 - **Unit**: in module `#[cfg(test)]` blocks (e.g., `crates/witslog-core/src/taxonomy.rs`).
 - **Integration**: `crates/witslog-store/tests/pN_integration.rs` (e.g., `p1_integration.rs`, `p2_integration.rs`). Mirrors phase.
 - **Run**: `cargo test -p witslog-core taxonomy` (unit by module name); `cargo test --test p2_integration` (integration by file).
+- **SDK bindings**: per-language unit tests (`bindings/python/tests` via `py -m pytest`, `bindings/node/test` via `node --test`, `bindings/php/tests` via `phpunit`) cover marshalling + the FFI error table (missing lib, ABI mismatch, write error). Cross-language regression: `bindings/e2e/run.ps1` — gates workspace `cargo test`, SDK→CLI readback (message+tags cross the ABI), and the argv-mitigation lock in one pipeline; run before calling P6 changes done.
 
 ### Error Handling
 
@@ -67,7 +76,7 @@ Workspace in `crates/`. Built crates:
 - ✅ **P3**: FTS5 + query engine — migrate_0005_fts5 shipped, witslog-query crate (search/aggregates/filters/correlate), p3_integration tests.
 - 🟡 **P4**: CLI ops — query/stats/export/import/vacuum/prune/migrate/config/archive/backup/list-dbs/category all shipped; missing global `--json` flag.
 - ✅ **P5**: MCP server — witslog-mcp crate (all 12 tools, JSON-RPC stdio transport, schema validation, statement timeout), wired into CLI as `witslog serve-mcp [--stdio] [--attach] [--allow-write]`, conformance test (`p5_integration.rs`) green.
-- 🟡 **P6** (current): SDK bindings (Python, Node). **Provider/runtime landed** — `witslog-runtime` crate (init-guard + ambient capture of panics / `tracing` error!·warn! / `Result::log_err`), FFI `witslog_init`/`witslog_flush`/`witslog_shutdown`, CLI mounts a guard + `log_event` now delegates to `witslog_runtime::build_and_write`. `tests/p6_integration.rs` green. Remaining: the actual Python/Node SDK wrappers over the C ABI (their host-language excepthooks call `witslog_log`; `tracing` Layer is Rust-only and does not cross the ABI).
+- ✅ **P6**: SDK bindings. Provider/runtime landed (`witslog-runtime`); C ABI extended additively with `context`/`tags`/`metadata` on `witslog_log` + a `witslog_abi_version()` handshake. Three framework-agnostic SDKs under `bindings/` — Python (`ctypes`, 0 deps) + FastAPI/Django/Flask, Node (`koffi`) + Express, PHP (`ext-ffi`) + Laravel provider — over the shared JSON contract (`bindings/CONTRACT.md`). Per-language unit tests + cross-language e2e (`bindings/e2e/run.ps1`, SDK→CLI readback) green.
 - ⬜ **P7**: Perf + hardening (benches, concurrency).
 - ⬜ **P8**: Packaging + install (cross-compile, release).
 - ⬜ **P9**: Extensibility + security (plugins, encryption, audit).
@@ -77,7 +86,7 @@ Workspace in `crates/`. Built crates:
 ## Next Steps
 
 1. **P4**: add global `--json` output flag.
-2. **P6**: build the Python/Node SDK wrappers over the C ABI — mount via `witslog_init`, register the host-language uncaught-exception hook to call `witslog_log`, flush via `witslog_shutdown` at exit. The Rust-side provider (`witslog-runtime`) is already in place.
+2. **P7**: perf benches + concurrency hardening (see PHASES.md §P7).
 
 ## Dev Workflow
 
@@ -114,7 +123,9 @@ Workspace in `crates/`. Built crates:
 - **Panic capture writes synchronously**: the runtime panic hook uses a sync write (never the async buffer) because a panic may precede process abort. It also chains to the previously-installed hook, and is installed at most once per process.
 - **FFI has no `Drop`**: buffered events need an explicit `witslog_flush`/`witslog_shutdown` before exit (SDK atexit). The Rust `Guard` from `init()`/`init_default()` flushes automatically on drop.
 - **`tracing` Layer is Rust-only + feature-gated**: `witslog-runtime`'s `WitslogLayer` lives behind the `tracing` feature and does not cross the C ABI. Cross-language SDKs capture host-language exceptions themselves.
+- **argv enrichment defaults on and can leak CLI-arg secrets**: `EnrichConfig::default().argv == true` captures the full process command line into `context.argv`; redaction (`redact_json`) recurses into it but only catches pattern-matched secrets (Bearer/api_key/password/AWS_*/conn-strings), not an arbitrary secret passed as a bare CLI arg. Apps that may receive secrets that way must pass `{"enrich":{"argv":false}}` to `witslog_init`/`witslog_configure` (or the SDK's `init(config)`). Proven to fully suppress argv end-to-end (native + all 3 SDKs) by `configure_argv_false_suppresses_argv_capture` in `witslog-ffi/src/lib.rs` and the matching per-SDK regression test; documented in **bindings/CONTRACT.md** ("Security note").
+- **ABI is versioned**: `witslog_abi_version()` returns `WITSLOG_ABI_VERSION` (currently `1`, in `witslog-ffi/src/lib.rs`). Every SDK core checks it at load time and raises `WitslogContractError` on mismatch — bump the constant on any breaking change to the `witslog_log`/`witslog_configure` JSON payloads and update **bindings/CONTRACT.md** in the same change.
 
 ---
 
-Last updated: 2026-07-13. Reflect code reality, not aspirational state.
+Last updated: 2026-07-16. Reflect code reality, not aspirational state.

@@ -8,6 +8,7 @@ Cargo.lock
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -18,6 +19,13 @@ Cargo.lock
 *.db
 *.db-*
 *.bak
+
+# SDK bindings — dependency/cache dirs (lockfiles stay tracked)
+bindings/node/node_modules/
+bindings/php/vendor/
+bindings/php/.phpunit.result.cache
+bindings/python/**/__pycache__/
+bindings/python/**/*.egg-info/
 
 # OS
 Thumbs.db

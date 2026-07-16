@@ -1,0 +1,31 @@
+{
+  "name": "witslog",
+  "version": "0.1.0",
+  "description": "Framework-agnostic Node.js SDK for witslog structured error logging",
+  "license": "Apache-2.0",
+  "author": "witslog team",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "lib/",
+    "frameworks/",
+    "_libs/"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "logging",
+    "errors",
+    "sqlite",
+    "observability"
+  ],
+  "dependencies": {
+    "koffi": "^2.9.0"
+  }
+}
