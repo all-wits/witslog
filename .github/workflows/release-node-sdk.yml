@@ -1,11 +1,15 @@
 name: Release Node SDK (cross-platform native lib)
 
-# Builds witslog_ffi natively on 5 hosted-runner OS/arch combos (no
+# Builds witslog_ffi natively on 4 hosted-runner OS/arch combos (no
 # cross-compilation - avoids the rusqlite bundled-C cross-toolchain problem),
 # assembles them into bindings/node/_libs/<platform>/, then publishes
-# @all-wits/witslog to npm. The same 5 artifacts are reusable by the Python
+# @all-wits/witslog to npm. The same artifacts are reusable by the Python
 # and PHP bindings' _libs/<platform>/ layout (identical locator convention -
 # see bindings/CONTRACT.md), even though this workflow only wires up Node.
+#
+# darwin-x64 (Intel Mac) is NOT built here - the macos-13 hosted runner pool
+# queues far longer than macos-14 (Apple Silicon) and was dropped; Intel Mac
+# users will hit WitslogLibraryError until that's revisited.
 #
 # Trigger: manual only (workflow_dispatch). Requires the NPM_TOKEN repo
 # secret (npmjs.com -> Access Tokens -> Automation token, scoped to publish).
@@ -36,10 +40,10 @@ jobs:
             platform_dir: linux-arm64
             lib_name: libwitslog_ffi.so
             artifact_path: target/release/libwitslog_ffi.so
-          - os: macos-13 # Intel
-            platform_dir: darwin-x64
-            lib_name: libwitslog_ffi.dylib
-            artifact_path: target/release/libwitslog_ffi.dylib
+          # macos-13 (Intel) dropped: GitHub-hosted runner pool for it queues
+          # for a very long time (far worse than macos-14/Apple Silicon).
+          # darwin-x64 users are unsupported until an Intel Mac runner/self-hosted
+          # option is available again - see bindings/CONTRACT.md locator note.
           - os: macos-14 # Apple Silicon
             platform_dir: darwin-arm64
             lib_name: libwitslog_ffi.dylib
