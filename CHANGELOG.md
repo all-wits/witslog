@@ -9,6 +9,16 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [0.1.1] — 2026-07-17
 
+### Fixed
+
+- CI: `.github/workflows/release.yml` `publish` job failed with "Resource not
+  accessible by integration" (403) on the first `v0.1.1` tag push — the
+  default `GITHUB_TOKEN` had no `contents: write` permission to create a
+  GitHub Release. Added a top-level `permissions: contents: write` block.
+  `build` and `smoke_test` had already passed on that run; only `publish`
+  needed the retry, so the `v0.1.1` tag was moved to the fix commit rather
+  than bumping the version.
+
 ### Added
 
 - **P8 — Packaging + install (partial)**:
