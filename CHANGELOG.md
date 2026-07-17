@@ -155,6 +155,36 @@ independently at pre-1.0 — this file tracks the project as a whole.
     `bindings/node/test/express_ingest.test.js` (origin/loopback/rate-limit/
     production-guard/severity-clamp regression locks).
 
+## [node-sdk 0.2.1] — 2026-07-17
+
+Docs-only follow-up to `0.2.0` — no code changes. `0.2.0` published
+successfully once `release-node-sdk.yml` was fixed to use npm Trusted
+Publishing (OIDC) instead of an automation token (see `### Fixed` below),
+but that publish ran off a commit that predated the README updates
+documenting `witslogBrowserIngest` and the P10 CLI surface (`resolve`,
+`--unresolved`, `--mttr`, `--verify-audit`) — so the README shown on the npm
+package page was stale. npm versions are immutable, so a docs-only change
+still needs its own version bump to actually reach the published listing.
+
+### Changed
+
+- `README.md` and `bindings/node/README.md`: document P10 (MTTR/resolution
+  tracking, notifiers, browser-side error capture) — feature list, status
+  table, MCP tool count (12 → 13, `mttr` added), CLI examples, and a new
+  "Browser-side error capture" section in both, including the
+  `witslogBrowserIngest` fail-closed defaults.
+
+### Fixed
+
+- `.github/workflows/release-node-sdk.yml`: the `npm publish` step passed
+  `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` (an automation token), which
+  npm's registry now rejects for this package with a 2FA-required 403 —
+  npm's own Trusted Publisher (OIDC) config on npmjs.com doesn't override a
+  token if one is still sent. Fixed by adding `permissions: id-token:
+  write` to the `assemble-and-publish` job, pinning npm to `latest` (OIDC
+  Trusted Publishing needs npm ≥ 11.5.1), and removing `NODE_AUTH_TOKEN`
+  from the publish step entirely.
+
 ## [node-sdk 0.2.0] — 2026-07-17
 
 Version cut for `@all-wits/witslog` on npm specifically (package.json bump;

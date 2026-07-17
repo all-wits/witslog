@@ -29,8 +29,15 @@ query.
 - 🏷️ **Deterministic taxonomy** — rule-based auto-classification, no model/embedding needed.
 - 🔒 **Redaction built in** — secrets/PII stripped before anything touches disk.
 - 🔗 **Correlation & fingerprinting** — dedup recurring errors, walk causality chains.
-- 🤖 **MCP server** — 12 read tools + 1 gated write tool for any MCP-compatible assistant.
+- 🤖 **MCP server** — 13 read tools + 1 gated write tool for any MCP-compatible assistant.
 - 🌍 **Cross-language SDKs** — Node, Python, PHP/Laravel over a shared C ABI.
+- ⏱️ **Resolution tracking & MTTR** — mark errors resolved, filter the unresolved backlog,
+  fingerprint-level mean time-to-resolution.
+- 🔔 **Notifiers** — file-based (NDJSON) notification on new events above a severity
+  threshold, throttled per fingerprint. Extensible via `witslog-plugin`'s `Notifier` trait.
+- 🌐 **Browser-side error capture** — a zero-dep client reporter ships `window.onerror` /
+  unhandled-rejection batches to a guarded server-side ingest endpoint, so client and
+  server errors land in the same queryable DB.
 
 ## 📦 Install
 
@@ -81,9 +88,13 @@ witslog log app "connection timeout" --error-code ETIMEDOUT --severity error
 
 ```bash
 witslog query "timeout*" --severity error
+witslog query --unresolved          # unresolved backlog only
+witslog resolve <event_id>          # mark resolved (idempotent; --force to override)
 witslog stats
+witslog stats --mttr                # fingerprint-level mean time-to-resolution
 witslog serve-mcp --stdio   # expose the log to an MCP-compatible AI assistant
 witslog doctor              # binary version, max supported schema, DB health
+witslog doctor --verify-audit        # recompute the tamper-evident audit hash chain
 ```
 
 ### From an app (Node example)
@@ -98,10 +109,36 @@ witslog.error('my-app', 'out of memory', { context: { pid: process.pid } });
 See [bindings/node](bindings/node), [bindings/python](bindings/python), and
 [bindings/php](bindings/php) for the Python/PHP equivalents.
 
+### Browser-side error capture
+
+Client-rendered JS errors (`window.onerror`, unhandled promise rejections) join the same DB
+via a zero-dep reporter + a guarded server-side ingest endpoint — no native/FFI code runs in
+the browser.
+
+```html
+<script src="witslog-browser.js"></script>
+<script>
+  WitslogBrowser.init({ endpoint: '/__witslog', app: 'my-web-app' });
+</script>
+```
+
+```js
+// Express, server-side — see bindings/CONTRACT.md for the Python/PHP recipe
+const { witslogBrowserIngest } = require('@all-wits/witslog/frameworks/express');
+app.use(witslogBrowserIngest({ allowedOrigins: ['https://your-app.example'] }));
+```
+
+Armed fail-closed by default: empty origin allowlist (you must opt in your own origins),
+refuses to run under `NODE_ENV=production` unless forced, rate-limited, and severity clamped
+to `error`/`warn` — the endpoint accepts untrusted text that lands in `events.message`, which
+MCP serves verbatim to an AI assistant. See [bindings/browser](bindings/browser) and the
+"Browser-side error capture" section of [bindings/CONTRACT.md](bindings/CONTRACT.md).
+
 ## 🧭 Status
 
-Pre-1.0. Core logging, storage, taxonomy, search, MCP server, SDKs, and perf hardening are
-shipped and tested; packaging (P8) is in progress and extensibility/security (P9) is next.
+Pre-1.0. Core logging, storage, taxonomy, search, MCP server, SDKs, perf hardening,
+extensibility/security, and MTTR/notifiers/browser capture are shipped and tested; packaging
+(P8) is in progress.
 
 | Phase | What | Status |
 |-------|------|--------|
@@ -110,11 +147,12 @@ shipped and tested; packaging (P8) is in progress and extensibility/security (P9
 | P2 | Taxonomy engine (auto-classify) | ✅ |
 | P3 | FTS5 + query engine (search/aggregates/correlation) | ✅ |
 | P4 | CLI utilities (export/import/prune/archive/backup/...) | 🟡 missing global `--json` |
-| P5 | MCP server (12 tools, JSON-RPC/stdio) | ✅ |
+| P5 | MCP server (13 tools, JSON-RPC/stdio) | ✅ |
 | P6 | SDK bindings (Node/Python/PHP + framework adapters) | ✅ |
 | P7 | Perf benches + concurrency hardening | ✅ |
 | P8 | Packaging + cross-platform install | 🟡 install scripts + release CI + smoke test shipped, verified green on GitHub Actions; no cut release yet |
-| P9 | Extensibility (plugins) + security (encryption, audit) | ⬜ |
+| P9 | Extensibility (plugins) + security (encryption, tamper-evident audit chain) | ✅ |
+| P10 | MTTR/resolution tracking, notifiers, browser-side error capture | ✅ |
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes and [PHASES.md](PHASES.md) for the detailed
 per-phase spec.
@@ -150,8 +188,12 @@ witslog serve-mcp --stdio
 Runs as a stdio JSON-RPC server. Any MCP-compatible client (Claude, other LLMs) can call:
 
 `search_errors` · `latest_errors` · `summarize_errors` · `classify_error` · `explain_error` ·
-`similar_errors` · `list_categories` · `statistics` · `timeline` · `top_failures` ·
+`similar_errors` · `list_categories` · `statistics` · `timeline` · `top_failures` · `mttr` ·
 `list_traces` · `search_all` (opt-in federation) · `witslog_delete` (gated, write)
+
+> No write tool exists for resolution, deliberately — `witslog_delete` (gated behind
+> `--allow-write`) is the only write tool. A resolve tool would let an agent silently
+> qualify events for `witslog_delete`'s default `resolved_at IS NOT NULL` filter.
 
 MCP client registration snippet — generate it directly (fills in the resolved
 binary path and project `cwd`):

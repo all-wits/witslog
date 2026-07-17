@@ -66,6 +66,28 @@ witslog.init();
 app.use(witslogErrorHandler('myapp'));   // last, after routes
 ```
 
+### 🌐 Browser-side error capture
+
+Pairs with [`bindings/browser/witslog-browser.js`](../browser) — a zero-dep client reporter
+that batches `window.onerror` / unhandled-rejection events and ships them via
+`navigator.sendBeacon` to this ingest endpoint.
+
+```js
+const { witslogBrowserIngest } = require('@all-wits/witslog/frameworks/express');
+
+app.use(witslogBrowserIngest({
+  allowedOrigins: ['https://your-app.example'], // required — fail-closed, default []
+}));
+```
+
+> **🔒 Security:** the request body is untrusted input that lands in `events.message`, which
+> MCP serves verbatim to an AI assistant. This handler is armed fail-closed: empty origin
+> allowlist by default, refuses to run under `NODE_ENV=production` unless `{ force: true }`,
+> rate-limited per client, and severity clamped to `error`/`warn` (never `fatal`/`critical`).
+> `tags: ['browser']` is advisory only, not a trust boundary. See
+> [`../CONTRACT.md`](../CONTRACT.md) for the Python/PHP ingest recipe and the full guardrail
+> rationale.
+
 ## 🧱 Works with your Node.js stack
 
 `@all-wits/witslog` is a plain npm/pnpm/bun package with no bundler-specific glue — it works
