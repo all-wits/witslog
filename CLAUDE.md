@@ -23,8 +23,7 @@ Workspace in `crates/`. Built crates:
 | **witslog-cli** | CLI subcommands (init/log/get/query/stats/export/import/vacuum/prune/config/archive/backup/list-dbs/migrate/resolve/delete/doctor/category) | `main.rs` (clap Commands) |
 | **witslog-ffi** | C ABI for embedding | `lib.rs` (witslog_log, witslog_resolve, witslog_delete, witslog_init/flush/shutdown) |
 | **witslog-runtime** | Ambient "Provider" — mount-once init-guard, ambient capture, panic hook, `tracing` Layer, `Result::log_err`, shared enrich→redact→classify→write pipeline | `lib.rs` (init/Guard/arm/capture/build_and_write/LogErr/macros), `tracing_layer.rs` (feature `tracing`) |
-
-**Not yet built**: witslog-plugin (extensibility, P9).
+| **witslog-plugin** | P9 extension points — six traits + `PluginRegistry` with panic-isolated dispatch (static registration only, no dynamic loading) | `lib.rs` (`TaxonomyRule`/`Exporter`/`Enricher`/`StorageBackend`/`Notifier`/`McpTool`, `PluginRegistry`) |
 
 **SDK bindings** (P6, outside `crates/`): `bindings/python` (ctypes, 0 deps) + `bindings/node` (koffi) +
 `bindings/php` (ext-ffi) — each a framework-agnostic core (`error/warn/info/exception/log`,
@@ -89,14 +88,15 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 - ✅ **P6**: SDK bindings. Provider/runtime landed (`witslog-runtime`); C ABI extended additively with `context`/`tags`/`metadata` on `witslog_log` + a `witslog_abi_version()` handshake. Three framework-agnostic SDKs under `bindings/` — Python (`ctypes`, 0 deps) + FastAPI/Django/Flask, Node (`koffi`) + Express, PHP (`ext-ffi`) + Laravel provider — over the shared JSON contract (`bindings/CONTRACT.md`). Per-language unit tests + cross-language e2e (`bindings/e2e/run.ps1`, SDK→CLI readback) green.
 - ✅ **P7**: Perf + hardening. Criterion bench suite (`bench/`: write throughput, buffered-log latency, search latency, FTS index-build cost), concurrency harness (`witslog-store/tests/p7_concurrency.rs`, 8 independent connections on one DB, zero loss + `integrity_check=ok`), load harness (`p7_load.rs`, scales via `WITSLOG_LOAD_TEST_ROWS`), memory script (`scripts/measure_memory.ps1`), CI (`.github/workflows/ci.yml`) with a bench-regression gate (`scripts/check_bench_regression.ps1`). Docs: `docs/perf.md`.
 - 🟡 **P8**: Packaging + install. Version-compat guard (`witslog-store::CURRENT_SCHEMA_VERSION`, refuses newer-than-binary schema), `serve-mcp --print-mcp-config`, `uninstall [--purge]`, migrate `.bak` restore-on-failure, install scripts (`install/install.sh`/`.ps1`), release workflow with a `smoke_test` job (`.github/workflows/release.yml`: builds per OS, runs the real init/log/query/serve-mcp/doctor/uninstall happy path, gates `publish`), Homebrew/Scoop manifest templates, `docs/install.md`. winget/`.deb`/`.rpm` intentionally out of scope — `cargo install`/npm/pip/composer already cover cross-platform distribution pre-1.0. Workflow confirmed green via `workflow_dispatch` on real Linux/macOS/Windows runners (build matrix + smoke_test). Missing: cutting a real `v*.*.*` tag to exercise `publish`.
-- ⬜ **P9**: Extensibility + security (plugins, encryption, audit).
+- 🟡 **P9**: Extensibility + security. `witslog-plugin` crate (6 traits + panic-isolated registry). Audit hash chain (`migrate_0006_audit_chain`, `witslog-store::audit`, `witslog doctor --verify-audit`). File-perm hardening (0600 DB, Unix). Field-level encryption (`witslog-core::crypto::FieldCipher`, AES-256-GCM on `metadata`) — full SQLCipher whole-DB encryption deliberately deferred (conflicts with FTS5/generated columns; see PHASES.md §P9). Config-driven redaction was already done in P1.
 
 **Critical path**: P0 → P3 → P5 → P8. P1/P2 parallelizable.
 
 ## Next Steps
 
 1. **P4**: add global `--json` output flag.
-2. **P8**: packaging + install (cross-compile, install scripts, MCP registration) — see PHASES.md §P8.
+2. **P8**: cut a real `v*.*.*` tag to exercise the `publish` job.
+3. **P9**: revisit dynamic plugin loading and full DB-at-rest encryption if a real need shows up — see PHASES.md §P9 for why both were scoped down.
 
 ## Dev Workflow
 
@@ -135,8 +135,11 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 - **FFI has no `Drop`**: buffered events need an explicit `witslog_flush`/`witslog_shutdown` before exit (SDK atexit). The Rust `Guard` from `init()`/`init_default()` flushes automatically on drop.
 - **`tracing` Layer is Rust-only + feature-gated**: `witslog-runtime`'s `WitslogLayer` lives behind the `tracing` feature and does not cross the C ABI. Cross-language SDKs capture host-language exceptions themselves.
 - **argv enrichment defaults on and can leak CLI-arg secrets**: `EnrichConfig::default().argv == true` captures the full process command line into `context.argv`; redaction (`redact_json`) recurses into it but only catches pattern-matched secrets (Bearer/api_key/password/AWS_*/conn-strings), not an arbitrary secret passed as a bare CLI arg. Apps that may receive secrets that way must pass `{"enrich":{"argv":false}}` to `witslog_init`/`witslog_configure` (or the SDK's `init(config)`). Proven to fully suppress argv end-to-end (native + all 3 SDKs) by `configure_argv_false_suppresses_argv_capture` in `witslog-ffi/src/lib.rs` and the matching per-SDK regression test; documented in **bindings/CONTRACT.md** ("Security note").
+- **Audit chain is always-on, not config-gated**: every insert through the shared `write_event` path (CLI, FFI, buffered/batch) extends `witslog-store::audit`'s hash chain unconditionally — there's no `[audit] enabled` toggle. `witslog doctor --verify-audit` walks it and reports the first divergent row; the chain state lives in `audit_meta.last_hash` + `events.audit_hash`, both idempotently backfilled by `migrate_0006_audit_chain` for pre-P9 DBs.
+- **Plugin dispatch always isolates panics**: every `PluginRegistry` call (`classify`, `run_enrichers`, `dispatch_event`, `export_all`, `call_mcp_tool`) wraps the plugin call in `catch_unwind` — a panicking plugin surfaces as `PluginError::Panicked` or is silently skipped (taxonomy/enrich), never unwinds into the core write path.
+- **`FieldCipher` only covers `metadata`**: `witslog-core::crypto::FieldCipher::encrypt_metadata` is the only wired encryption hook. `message`/`context`/`stack_norm` etc. stay plaintext because FTS5 and the `GENERATED ALWAYS AS (json_extract(context, ...))` columns need to read them — encrypting those would silently break search and the hot query axes.
 - **ABI is versioned**: `witslog_abi_version()` returns `WITSLOG_ABI_VERSION` (currently `1`, in `witslog-ffi/src/lib.rs`). Every SDK core checks it at load time and raises `WitslogContractError` on mismatch — bump the constant on any breaking change to the `witslog_log`/`witslog_configure` JSON payloads and update **bindings/CONTRACT.md** in the same change.
 
 ---
 
-Last updated: 2026-07-17. Reflect code reality, not aspirational state.
+Last updated: 2026-07-17 (P9 added). Reflect code reality, not aspirational state.

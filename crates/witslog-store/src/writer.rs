@@ -353,6 +353,16 @@ pub(crate) fn write_event(conn: &rusqlite::Connection, event: &Event) -> Result<
         &category,
     )?;
 
+    let ts_str = event.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    crate::audit::append(
+        conn,
+        row_id,
+        &event.event_id,
+        &ts_str,
+        &event.message,
+        &event.fingerprint,
+    )?;
+
     Ok(row_id)
 }
 

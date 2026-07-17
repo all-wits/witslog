@@ -7,6 +7,50 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Added
+
+- **P9 — Extensibility + security**:
+  - `witslog-plugin` crate (FR-P9-001/002): six extension-point traits
+    (`TaxonomyRule`, `Exporter`, `Enricher`, `StorageBackend`, `Notifier`,
+    `McpTool`) plus `PluginRegistry` for static registration. Every dispatch
+    path (`classify`, `run_enrichers`, `dispatch_event`, `export_all`,
+    `call_mcp_tool`) wraps the call in `catch_unwind` so a panicking plugin is
+    reported as a `PluginError::Panicked` rather than crashing the core write
+    path or corrupting the DB (non-functional isolation requirement).
+    Dynamic (`.so`/`.dll`) loading intentionally out of scope — static
+    registration keeps the ABI surface small.
+  - Audit hash chain (FR-P9-006/007): `migrate_0006_audit_chain` adds
+    `events.audit_hash` + an `audit_meta` table; `witslog-store::audit`
+    chains `sha256(prev_hash|event_id|ts|message|fingerprint)` on every
+    insert (wired into the shared `write_event` path, so it covers the CLI,
+    FFI, and buffered/batch writers alike) and back-fills any pre-existing
+    rows on migration. `witslog doctor --verify-audit` recomputes the chain
+    and reports the first tampered row (id + expected/actual hash), exiting
+    non-zero on a break.
+  - File-permission hardening (FR-P9-005): `witslog init` now chmods the DB
+    file `0600` in addition to the pre-existing `0700` on `.witslog/` (Unix
+    only — Windows ACL hardening intentionally out of scope, same as the
+    existing dir-perm call).
+  - `witslog-core::crypto::FieldCipher` (FR-P9-004, scoped): AES-256-GCM
+    field-level cipher for `metadata` via `EventBuilder::encrypt_metadata`,
+    key sourced from a 32-byte hex string or `FieldCipher::from_env`. Full
+    SQLCipher-style DB-at-rest encryption was evaluated and deliberately
+    **not** built: it conflicts with this schema's FTS5 index and
+    `GENERATED ALWAYS AS (json_extract(...))` columns (both need plaintext),
+    and vendoring SQLCipher adds real cross-compile cost for P8's release
+    matrix — the same cost-vs-value call already made for winget/.deb/.rpm.
+    Off by default either way.
+  - Config-driven custom redaction rules (FR-P9-003) were already wired in
+    P1 (`RedactSection::custom_patterns`); this phase didn't need to add
+    anything there.
+  - Tests: `witslog-plugin` unit tests (one per trait + a panic-isolation
+    regression); `witslog-store::audit` unit tests (clean chain, tampered-row
+    detection, backfill-from-legacy-rows); `witslog-core::crypto` unit tests
+    (round-trip, wrong-key failure, envelope wrap/unwrap); `witslog-cli`
+    `tests/p9_integration.rs` drives the real binary end-to-end (`doctor
+    --verify-audit` clean vs. tampered, plus a Unix-only 0600/0700
+    permission regression).
+
 ## [0.1.1] — 2026-07-17
 
 ### Fixed

@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod conn;
 pub mod error;
 pub mod migrate;
@@ -5,6 +6,7 @@ pub mod sink;
 pub mod taxonomy;
 pub mod writer;
 
+pub use audit::{AuditBreak, AuditVerifyResult};
 pub use conn::DbConnection;
 pub use error::{Result, StoreError};
 pub use migrate::{Migrator, CURRENT_SCHEMA_VERSION};

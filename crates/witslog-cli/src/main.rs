@@ -107,7 +107,13 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    Doctor,
+    Doctor {
+        /// FR-P9-007: recompute the audit hash chain and report any break
+        /// (offending row + expected/actual hash) instead of the normal
+        /// health summary.
+        #[arg(long)]
+        verify_audit: bool,
+    },
     Category {
         #[command(subcommand)]
         action: CategoryAction,
@@ -243,8 +249,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             delete_events(&cli.db, event_id, fingerprint, resolved_before, force, dry_run)?;
         }
-        Commands::Doctor => {
-            doctor()?;
+        Commands::Doctor { verify_audit } => {
+            doctor(verify_audit)?;
         }
         Commands::Category { action } => {
             cmd_category(&cli.db, action)?;
@@ -282,6 +288,16 @@ fn init_db(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 
     let db_path = witslog_dir.join("witslog.db");
     let _store = Store::open_or_create(&db_path)?;
+
+    // FR-P9-005: restrict DB file permissions (0600) alongside the 0700 dir
+    // above. Windows has no POSIX mode bits; ACL hardening is out of scope
+    // here (same call the project already made for the dir, above).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&db_path, perms)?;
+    }
 
     println!("✓ Initialized witslog at {}", db_path.display());
     println!("  DB path: {}", db_path.display());
@@ -490,7 +506,7 @@ fn delete_events(
     Ok(())
 }
 
-fn doctor() -> Result<(), Box<dyn std::error::Error>> {
+fn doctor(verify_audit: bool) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     let config = Config::default_project();
     let db_path = config.resolve_db_path(&cwd);
@@ -502,18 +518,43 @@ fn doctor() -> Result<(), Box<dyn std::error::Error>> {
     println!("  resolved db: {}", db_path.display());
     println!("  db exists: {}", db_path.exists());
 
-    if db_path.exists() {
-        match Store::open_or_create(&db_path) {
-            Ok(store) => {
-                println!("  ✓ database healthy");
-                let writer = witslog_store::EventWriter::new(store.conn());
-                if let Ok(dropped) = writer.dropped_count() {
-                    println!("  dropped events (lifetime): {}", dropped);
-                }
+    if !db_path.exists() {
+        return Ok(());
+    }
+
+    if verify_audit {
+        let store = Store::open_or_create(&db_path)?;
+        let conn = store.conn().conn();
+        match witslog_store::audit::verify_chain(&conn)? {
+            witslog_store::AuditVerifyResult::Ok { rows_checked } => {
+                println!("  ✓ audit chain verified ({} rows, no tampering detected)", rows_checked);
             }
-            Err(e) => {
-                println!("  ✗ database check failed: {}", e);
+            witslog_store::AuditVerifyResult::Broken(b) => {
+                println!(
+                    "  ✗ audit chain broken at row id={} event_id={}",
+                    b.row_id, b.event_id
+                );
+                println!("    expected hash: {}", b.expected_hash);
+                println!(
+                    "    actual hash:   {}",
+                    b.actual_hash.as_deref().unwrap_or("<null>")
+                );
+                std::process::exit(1);
             }
+        }
+        return Ok(());
+    }
+
+    match Store::open_or_create(&db_path) {
+        Ok(store) => {
+            println!("  ✓ database healthy");
+            let writer = witslog_store::EventWriter::new(store.conn());
+            if let Ok(dropped) = writer.dropped_count() {
+                println!("  dropped events (lifetime): {}", dropped);
+            }
+        }
+        Err(e) => {
+            println!("  ✗ database check failed: {}", e);
         }
     }
 

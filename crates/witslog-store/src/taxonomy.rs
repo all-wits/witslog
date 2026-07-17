@@ -210,7 +210,7 @@ mod tests {
               error_code TEXT, message TEXT NOT NULL, exception TEXT, stacktrace TEXT,
               stack_norm TEXT, root_cause TEXT, fingerprint TEXT NOT NULL,
               correlation_id TEXT, parent_event_id TEXT, context TEXT, tags TEXT,
-              metadata TEXT, ingest_source TEXT, schema_v INTEGER NOT NULL
+              metadata TEXT, ingest_source TEXT, schema_v INTEGER NOT NULL, audit_hash TEXT
             );
             CREATE TABLE categories (
               canonical TEXT PRIMARY KEY, parent TEXT, label TEXT, builtin INTEGER NOT NULL DEFAULT 0
@@ -222,6 +222,10 @@ mod tests {
               fingerprint TEXT PRIMARY KEY, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
               count INTEGER NOT NULL DEFAULT 1, sample_event_id TEXT NOT NULL, category TEXT, title TEXT
             );
+            CREATE TABLE audit_meta (
+              key TEXT PRIMARY KEY, value TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO audit_meta (key, value) VALUES ('last_hash', 'genesis');
             "#,
         )
         .unwrap();

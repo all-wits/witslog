@@ -3,7 +3,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this binary knows how to read/write (FR-P8-007).
 /// Bump alongside adding a new `migrate_000N_*` step.
-pub const CURRENT_SCHEMA_VERSION: i32 = 5;
+pub const CURRENT_SCHEMA_VERSION: i32 = 6;
 
 pub struct Migrator<'a> {
     conn: &'a Connection,
@@ -67,6 +67,11 @@ impl<'a> Migrator<'a> {
         if current_version < 5 {
             self.migrate_0005_fts5()?;
             self.record_migration(5, "fts5")?;
+        }
+
+        if current_version < 6 {
+            self.migrate_0006_audit_chain()?;
+            self.record_migration(6, "audit_chain")?;
         }
 
         Ok(())
@@ -281,6 +286,38 @@ impl<'a> Migrator<'a> {
                 "#,
             )?;
         }
+
+        Ok(())
+    }
+
+    /// FR-P9-006: tamper-evident audit trail. Each row gets a hash over
+    /// (prev_hash, event_id, ts, message, fingerprint) chained to the prior
+    /// row's hash, so any historical row edited/deleted-and-reinserted breaks
+    /// the chain at that point (`doctor --verify-audit`, FR-P9-007).
+    fn migrate_0006_audit_chain(&self) -> Result<()> {
+        let has_column: bool = self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'audit_hash'")?
+            .exists([])?;
+
+        if !has_column {
+            self.conn
+                .execute_batch("ALTER TABLE events ADD COLUMN audit_hash TEXT;")?;
+        }
+
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS audit_meta (
+              key   TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO audit_meta (key, value) VALUES ('last_hash', 'genesis');
+            "#,
+        )?;
+
+        // Back-fill any pre-existing rows (from a DB migrated up from <v6)
+        // into the chain, oldest first, so the chain covers full history.
+        crate::audit::backfill_chain(self.conn)?;
 
         Ok(())
     }

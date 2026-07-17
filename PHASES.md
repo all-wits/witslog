@@ -747,8 +747,22 @@ serve-mcp` all succeed; upgrade path migrates; downgrade guard refuses.
 custom taxonomy/exporters/enrichers/notifiers/MCP-tools, configurable redaction,
 optional encryption at rest, and a tamper-evident audit trail.
 
-**Status.** ⬜ todo (redaction built-ins land in P1; this phase makes it configurable +
-adds the rest).
+**Status.** 🟡 mostly done. `witslog-plugin` crate ships all six traits +
+`PluginRegistry` with panic-isolated dispatch (FR-P9-001/002). Audit hash
+chain shipped: `migrate_0006_audit_chain`, `witslog-store::audit` (chained
+sha256 over every insert, backfill for legacy rows), `witslog doctor
+--verify-audit` (FR-P9-006/007). File-permission hardening shipped: DB file
+now `0600` alongside the existing `0700` dir, Unix-only (FR-P9-005).
+Config-driven custom redaction (FR-P9-003) was already wired in P1 —
+nothing new needed. Encryption-at-rest (FR-P9-004) shipped scoped down to a
+field-level `FieldCipher` (AES-256-GCM) for `metadata` via
+`witslog-core::crypto`; full SQLCipher-style whole-DB encryption was
+evaluated and deliberately not built — it conflicts with the FTS5 index and
+`GENERATED ALWAYS AS (json_extract(...))` columns (both require plaintext),
+and vendoring SQLCipher would add real cross-compile cost to P8's release
+matrix for pre-1.0 value, the same call already made for winget/.deb/.rpm.
+Remaining: dynamic (`.so`/`.dll`) plugin loading was scoped out entirely
+(static registration only) — revisit if a real out-of-tree plugin need shows up.
 **Dependencies.** P1–P6.
 **Complexity.** M–L.
 
@@ -792,14 +806,14 @@ adds the rest).
 | Audit chain break | verify walk | report row + expected/actual hash |
 
 **TODO checklist.**
-- [ ] `witslog-plugin` crate: trait defs (`TaxonomyRule`, `Exporter`, `Enricher`,
+- [x] `witslog-plugin` crate: trait defs (`TaxonomyRule`, `Exporter`, `Enricher`,
       `StorageBackend`, `Notifier`, `McpTool`) + registry.
-- [ ] Static registration API + optional dynamic (`libloading`) behind a feature.
-- [ ] Config-driven redaction rules (extends P1 `Redactor`).
-- [ ] Optional encryption-at-rest (SQLCipher-compatible) + key sourcing.
-- [ ] File-permission hardening (0600 DB / 0700 dir) verified cross-OS.
-- [ ] Audit hash chain column + `doctor --verify-audit`.
-- [ ] Sample plugins + tests per extension point; tamper-detection test.
+- [x] Static registration API. Dynamic (`libloading`) loading scoped out (see status note above).
+- [x] Config-driven redaction rules (extends P1 `Redactor`) — already done in P1.
+- [x] Encryption-at-rest, scoped to field-level `FieldCipher` (see status note above) + key sourcing (hex/env).
+- [x] File-permission hardening (0600 DB / 0700 dir) — Unix; Windows ACL hardening out of scope (see status note).
+- [x] Audit hash chain column + `doctor --verify-audit`.
+- [x] Sample plugins + tests per extension point; tamper-detection test.
 
 **Verification.** Register one plugin of each type + assert effect; enable redaction/
 encryption/audit in a temp project → confirm redacted-at-rest, key-gated access, and

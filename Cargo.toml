@@ -8,6 +8,7 @@ members = [
     "crates/witslog-cli",
     "crates/witslog-ffi",
     "crates/witslog-runtime",
+    "crates/witslog-plugin",
     "bench",
 ]
 resolver = "2"
@@ -33,3 +34,7 @@ clap = { version = "4.5", features = ["derive"] }
 tempfile = "3.8"
 regex = "1"
 hostname = "0.4"
+sha2 = "0.10"
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"

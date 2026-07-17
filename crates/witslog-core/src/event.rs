@@ -206,6 +206,11 @@ impl EventBuilder {
         self
     }
 
+    /// Mutable access to `metadata` for extension points (e.g. `crypto::FieldCipher`).
+    pub(crate) fn metadata_mut(&mut self) -> Option<&mut JsonValue> {
+        self.metadata.as_mut()
+    }
+
     /// Auto-populate hostname/pid/cwd/argv/git_commit/allow-listed env vars per `cfg`.
     /// Best-effort: a missing/unreadable field is silently skipped, never errors.
     pub fn enrich(self, cfg: &crate::enrich::EnrichConfig) -> Self {

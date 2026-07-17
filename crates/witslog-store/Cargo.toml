@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+sha2.workspace = true
 witslog-core = { path = "../witslog-core" }
 
 [dev-dependencies]
