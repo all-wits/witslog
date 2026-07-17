@@ -40,7 +40,7 @@ Native libraries for Windows x64, Linux x64/arm64, and macOS (Apple Silicon) are
 ```js
 const witslog = require('@all-wits/witslog');
 
-witslog.init();                       // mount once (flushes on process exit)
+witslog.init({ createProject: true }); // scaffolds .witslog/ if missing, then mounts
 witslog.error('myapp', 'db timeout', { context: { request_id: 'r1' }, tags: ['db'] });
 
 try {
@@ -50,8 +50,12 @@ try {
 }
 ```
 
-Run from a directory inside a `.witslog/` project (or `witslog init` one first) so events
-land in that project's DB.
+`init()` needs a `.witslog/` project directory to write into — pass `createProject: true`
+(scaffolds one at `process.cwd()`) or `createProject: '/path/to/project'` the first time you
+mount in a fresh project; it's a no-op on later runs once `.witslog/` already exists. This
+means `npm install` alone is enough — no separate CLI install required to get started. (If you
+already have the [`witslog` CLI](../../docs/install.md) installed, `witslog init` still works
+and does the same thing.)
 
 > **🔒 Security:** `argv` enrichment defaults on and captures the full command line. If your
 > app may receive secrets as bare CLI args, call `witslog.init({ enrich: { argv: false } })` —
@@ -111,7 +115,7 @@ in **any Node.js process**, which covers the server side of most modern framewor
 
 | Function | Description |
 |----------|--------------|
-| `init(config?)` | Mount the SDK; optionally pass enrich/redact/buffer config (see [CONTRACT.md](../CONTRACT.md)). |
+| `init(config?)` | Mount the SDK; pass `{ createProject: true }` to scaffold `.witslog/` first, plus optional enrich/redact/buffer config (see [CONTRACT.md](../CONTRACT.md)). |
 | `error/warn/info(app, message, opts?)` | Log at the given severity. `opts`: `context`, `tags`, `metadata`, `error_code`, `exception`, `stacktrace`, `correlation_id`, `parent_event_id`, `category`, `version`, `environment`. |
 | `log(app, message, opts?)` | Same as `error`, explicit severity via `opts.severity`. |
 | `exception(app, err, opts?)` | Log a caught `Error`, capturing `err.stack`. |

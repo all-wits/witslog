@@ -15,6 +15,8 @@ export interface WitslogFields {
 }
 
 export interface WitslogConfig {
+  /** Scaffold a `.witslog/` project dir before mounting. `true` = cwd, or an explicit path. */
+  createProject?: boolean | string;
   enrich?: Record<string, unknown>;
   redact?: { custom_patterns?: string[] };
   buffer?: {

@@ -382,6 +382,59 @@ pub unsafe extern "C" fn witslog_delete(filter_json_ptr: *const c_char) -> *mut 
     }
 }
 
+/// Scaffold a `.witslog/` project directory (mirrors the CLI's `witslog init`):
+/// creates `<path>/.witslog/`, opens/creates `witslog.db` inside it, and runs
+/// migrations. `path_ptr` may be null to use the current working directory.
+/// Idempotent — safe to call against an already-initialized project (dir
+/// creation and `Store::open_or_create`'s migrate step are both no-ops on a
+/// second call). This exists because none of the FFI write paths
+/// (`witslog_log`/`witslog_resolve`/`witslog_delete`) create the parent
+/// `.witslog/` directory themselves — `SQLITE_OPEN_CREATE` creates the DB
+/// *file*, not missing parent directories — so a process that never ran the
+/// separately-distributed CLI's `witslog init` had no way to bootstrap a
+/// project from the native lib alone. Returns 0 on success, -1 on I/O or DB
+/// error.
+///
+/// # Safety
+/// `path_ptr` must be null or a valid, NUL-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn witslog_bootstrap_project(path_ptr: *const c_char) -> i32 {
+    let base = match cstr_to_string(path_ptr) {
+        Some(s) => PathBuf::from(s),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+
+    let witslog_dir = base.join(".witslog");
+    if std::fs::create_dir_all(&witslog_dir).is_err() {
+        return -1;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::set_permissions(&witslog_dir, std::fs::Permissions::from_mode(0o700)).is_err()
+        {
+            return -1;
+        }
+    }
+
+    let db_path = witslog_dir.join("witslog.db");
+    let _store = match Store::open_or_create(&db_path) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600)).is_err() {
+            return -1;
+        }
+    }
+
+    0
+}
+
 /// Mount witslog for the current process ("Provider" entrypoint). Applies the
 /// same configuration payload as `witslog_configure` (pass a null pointer to
 /// mount with defaults), then arms the ambient runtime so **Rust-side panics in
@@ -651,6 +704,67 @@ mod tests {
             let reset_json = CString::new(r#"{"enrich":{"argv":true}}"#).unwrap();
             witslog_configure(reset_json.as_ptr());
         });
+    }
+
+    #[test]
+    fn witslog_log_fails_when_witslog_dir_absent() {
+        // Regression lock for the npm-SDK gap: without a pre-existing `.witslog/`
+        // dir (previously only creatable via the separately-distributed CLI's
+        // `witslog init`), the FFI write path must fail cleanly (-1), not panic
+        // or silently write outside the project.
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let log_json = CString::new(r#"{"application":"app","message":"no project yet"}"#).unwrap();
+        let result = unsafe { witslog_log(log_json.as_ptr()) };
+
+        std::env::set_current_dir(orig).unwrap();
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn bootstrap_project_creates_dir_and_enables_logging() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        assert!(!dir.path().join(".witslog").exists());
+        assert_eq!(unsafe { witslog_bootstrap_project(std::ptr::null()) }, 0);
+        assert!(dir.path().join(".witslog").join("witslog.db").exists());
+
+        let log_json =
+            CString::new(r#"{"application":"app","message":"project bootstrapped"}"#).unwrap();
+        let row_id = unsafe { witslog_log(log_json.as_ptr()) };
+
+        std::env::set_current_dir(orig).unwrap();
+        assert!(row_id >= 0, "log must succeed once the project dir exists");
+    }
+
+    #[test]
+    fn bootstrap_project_is_idempotent() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        assert_eq!(unsafe { witslog_bootstrap_project(std::ptr::null()) }, 0);
+        assert_eq!(unsafe { witslog_bootstrap_project(std::ptr::null()) }, 0);
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    fn bootstrap_project_accepts_explicit_path() {
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let path_str = dir.path().to_str().unwrap();
+        let path_c = CString::new(path_str).unwrap();
+
+        assert_eq!(unsafe { witslog_bootstrap_project(path_c.as_ptr()) }, 0);
+        assert!(dir.path().join(".witslog").join("witslog.db").exists());
     }
 
     #[test]

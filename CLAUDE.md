@@ -21,7 +21,7 @@ Workspace in `crates/`. Built crates:
 | **witslog-query** | FTS5 search + structured filters + aggregates | `search.rs` (bm25 + keyset cursor), `filters.rs` (incl. `resolved`), `aggregates.rs` (stats/timeline/top_failures/`mttr`), `correlate.rs` (edge walks) |
 | **witslog-mcp** | MCP tool registry + JSON-RPC transport | `registry.rs` (13 tools incl. read-only `mttr`), `transport.rs` (stdio JSON-RPC), `tools.rs` (schema) — wired into CLI as `witslog serve-mcp` |
 | **witslog-cli** | CLI subcommands (init/log/get/query/stats/export/import/vacuum/prune/config/archive/backup/list-dbs/migrate/resolve/delete/doctor/category) | `main.rs` (clap Commands; `query --unresolved`, `stats --mttr`, `resolve --force`) |
-| **witslog-ffi** | C ABI for embedding | `lib.rs` (witslog_log, witslog_resolve, witslog_delete, witslog_init/flush/shutdown) |
+| **witslog-ffi** | C ABI for embedding | `lib.rs` (witslog_log, witslog_resolve, witslog_delete, witslog_bootstrap_project, witslog_init/flush/shutdown) |
 | **witslog-runtime** | Ambient "Provider" — mount-once init-guard, ambient capture, panic hook, `tracing` Layer, `Result::log_err`, shared enrich→redact→classify→write pipeline, notifier dispatch | `lib.rs` (init/Guard/arm/capture/build_and_write/LogErr/macros), `notify.rs` (`FileNotifier`/`ThrottledNotifier`, P10), `tracing_layer.rs` (feature `tracing`) |
 | **witslog-plugin** | P9 extension points — six traits + `PluginRegistry` with panic-isolated dispatch (static registration only, no dynamic loading) | `lib.rs` (`TaxonomyRule`/`Exporter`/`Enricher`/`StorageBackend`/`Notifier`/`McpTool`, `PluginRegistry`) |
 
@@ -102,6 +102,7 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 2. **P8**: cut a real `v*.*.*` tag to exercise the `publish` job.
 3. **P9**: revisit dynamic plugin loading and full DB-at-rest encryption if a real need shows up — see PHASES.md §P9 for why both were scoped down.
 4. **P10**: Python/PHP browser-ingest adapters if the Node one proves out (currently a documented recipe only, `bindings/CONTRACT.md`); `ingest_source` provenance in the payload contract would need an ABI-version bump.
+5. **P6**: wire `witslog_bootstrap_project` (see Gotchas) into Python/PHP as a convenience wrapper, matching Node's `init({ createProject: true })` — currently Node-only; Python/PHP still require the separately-installed CLI's `witslog init`.
 
 ## Dev Workflow
 
@@ -150,7 +151,8 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 - **No MCP write tool for resolution, deliberately**: PLAN.md §5 made `witslog_delete` the only write tool. A `witslog_resolve` MCP tool was considered and rejected — it would let an agent silently qualify rows for `witslog_delete`'s `resolved_at IS NOT NULL` default filter, handing out delete through the back door. `mttr` and the `resolved` filter are read-only.
 - **Notifier dispatch never happens from the panic-hook's sync path**: `witslog-runtime::write_via_snapshot`/`build_and_write` dispatch to `[notify]`'s `PluginRegistry` after a successful write, but `capture_sync` (used only by the panic hook, since a panic may precede process abort) explicitly skips it — notifier I/O in that path is the one place a stall is unacceptable. `PluginRegistry::dispatch_event` already isolates notifier panics/failures (see the P9 gotcha above), so this is belt-and-suspenders, not the only safeguard.
 - **Browser ingest text is untrusted input reaching the AI, not just a size-limit problem**: `witslogBrowserIngest` (`bindings/node/frameworks/express.js`) writes into `events.message`, which MCP serves verbatim to an LLM. The Origin allowlist (default: none) is the real defense — a same-machine malicious page POSTing to `localhost` has `remoteAddress` `127.0.0.1` regardless, so a loopback check alone doesn't stop it. `tags:['browser']` is advisory only (merged by `classify()`, not enforced) — it is not proof of origin.
+- **No FFI write path creates `.witslog/` itself**: `witslog_log`/`witslog_resolve`/`witslog_delete` all go through `Store::open_or_create`, which opens/migrates a DB file via `SQLITE_OPEN_CREATE` — that creates the *file*, not a missing parent directory. Historically only the CLI's `init_db` (`witslog-cli/src/main.rs`) created `.witslog/`, so an app installed via a package manager alone (no CLI bundled, e.g. `npm install @all-wits/witslog`) had no way to bootstrap a project — `log()` always failed `rc=-1`. Fixed by `witslog_bootstrap_project(path_or_null)` in `witslog-ffi/src/lib.rs` (mirrors `init_db`: create dir, open/create + migrate, Unix perms; idempotent), wired into the Node SDK as `init({ createProject: true })` / `{ createProject: '/path' }`. Python/PHP don't wrap it yet (see Next Steps).
 
 ---
 
-Last updated: 2026-07-17 (P10 added: MTTR/resolution tracking, notifiers, browser-side error capture — see PHASES.md §P10). Reflect code reality, not aspirational state.
+Last updated: 2026-07-17 (P10 added: MTTR/resolution tracking, notifiers, browser-side error capture — see PHASES.md §P10; Node SDK project-bootstrap fix added: `witslog_bootstrap_project` native export + `init({ createProject: true })`, closing the npm-install-only init gap — node-sdk bumped to 0.3.0). Reflect code reality, not aspirational state.

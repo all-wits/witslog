@@ -52,9 +52,28 @@ function exception(application, err, fields = {}) {
   return log(application, message, out);
 }
 
-/** Mount witslog for this process. `config` is the init/configure object (see CONTRACT.md). */
+/**
+ * Mount witslog for this process. `config` is the init/configure object (see CONTRACT.md).
+ * Pass `createProject: true` (or a path string) to scaffold a `.witslog/` project directory
+ * first — needed because `npm install` alone ships no CLI to run `witslog init` with.
+ */
 function init(config = null) {
-  const json = config === null || config === undefined ? null : encode(config);
+  let rest = config;
+  if (config && config.createProject) {
+    const projectPath =
+      typeof config.createProject === 'string' ? config.createProject : null;
+    const bootstrapRc = getLib().bootstrapProject(projectPath);
+    if (bootstrapRc !== 0) {
+      throw new errors.WitslogWriteError(
+        `witslog_bootstrap_project failed (rc=${bootstrapRc}) for path=${projectPath || process.cwd()}`
+      );
+    }
+    const { createProject: _drop, ...withoutCreateProject } = config;
+    rest = withoutCreateProject;
+  }
+
+  const json =
+    rest === null || rest === undefined || Object.keys(rest).length === 0 ? null : encode(rest);
   const rc = getLib().init(json);
   if (rc === -1) throw new RangeError('witslog_init rejected the config JSON');
   if (rc === -2) throw new RangeError('witslog_init rejected an invalid redaction pattern');

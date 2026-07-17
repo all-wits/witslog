@@ -37,7 +37,10 @@ except Exception:
 ```
 
 Run from a directory inside a `.witslog/` project (or `witslog init` one first) so events
-land in that project's DB.
+land in that project's DB. This SDK doesn't yet wrap the native `witslog_bootstrap_project`
+export (see [../CONTRACT.md](../CONTRACT.md#witslog_bootstrap_project-no-json--plain-path-string-or-null))
+the way the [Node SDK's](../node) `init({ createProject: true })` does — you still need the
+CLI installed separately for now.
 
 > **🔒 Security:** `argv` enrichment defaults on and captures the full command line. If your
 > app may receive secrets as bare CLI args, call

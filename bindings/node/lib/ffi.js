@@ -69,6 +69,7 @@ function loadLibrary(koffi = require('koffi')) {
     init: lib.func('int witslog_init(const char*)'),
     log: lib.func('int64 witslog_log(const char*)'),
     resolve: lib.func('int witslog_resolve(const char*)'),
+    bootstrap_project: lib.func('int witslog_bootstrap_project(const char*)'),
     flush: lib.func('int witslog_flush()'),
     shutdown: lib.func('int witslog_shutdown()'),
   };
@@ -82,6 +83,7 @@ function loadLibrary(koffi = require('koffi')) {
     init: (json) => Number(fns.init(json)),
     log: (json) => Number(fns.log(json)),
     resolve: (id) => Number(fns.resolve(id)),
+    bootstrapProject: (path) => Number(fns.bootstrap_project(path)),
     flush: () => Number(fns.flush()),
     shutdown: () => Number(fns.shutdown()),
   };

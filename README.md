@@ -102,12 +102,14 @@ witslog doctor --verify-audit        # recompute the tamper-evident audit hash c
 ```js
 const witslog = require('@all-wits/witslog');
 
-witslog.init();
+witslog.init({ createProject: true }); // scaffolds .witslog/ if missing, then mounts
 witslog.error('my-app', 'out of memory', { context: { pid: process.pid } });
 ```
 
-See [bindings/node](bindings/node), [bindings/python](bindings/python), and
-[bindings/php](bindings/php) for the Python/PHP equivalents.
+`createProject` means `npm install` alone is enough to get started — no separate CLI install
+needed just to bootstrap a project. See [bindings/node](bindings/node),
+[bindings/python](bindings/python), and [bindings/php](bindings/php) for the Python/PHP
+equivalents (which still need the CLI's `witslog init` for now — see each README).
 
 ### Browser-side error capture
 

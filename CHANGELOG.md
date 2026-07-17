@@ -9,6 +9,22 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ### Fixed
 
+- **Node SDK (`@all-wits/witslog`) had no way to bootstrap a `.witslog/` project**:
+  `npm install` bundles the native `witslog_ffi` lib but ships no CLI binary, and the
+  README's `witslog init` step referenced a command with no install path from npm alone.
+  Every FFI write path (`witslog_log`/`witslog_resolve`/`witslog_delete`) opens the DB via
+  `SQLITE_OPEN_CREATE`, which creates the DB *file* but not a missing parent `.witslog/`
+  directory — so `log()`/`error()`/`info()` all failed (`rc=-1`) in a project that had never
+  run the CLI's `witslog init`. Fixed by adding `witslog_bootstrap_project(path_or_null)` to
+  `witslog-ffi` (mirrors the CLI's `init_db`: create dir, `Store::open_or_create`, migrate;
+  idempotent) and wiring it into the Node SDK as `witslog.init({ createProject: true })` /
+  `{ createProject: '/path' }`. Documented in `bindings/CONTRACT.md` and
+  `bindings/node/README.md`. Regression lock:
+  `witslog-ffi::tests::witslog_log_fails_when_witslog_dir_absent` (pins the original
+  failure) + `bootstrap_project_creates_dir_and_enables_logging` /
+  `bootstrap_project_is_idempotent` / `bootstrap_project_accepts_explicit_path`
+  (`crates/witslog-ffi/src/lib.rs`), plus `bindings/node/test/bootstrap.test.js` for the JS
+  wiring (config-stripping, error surfacing, no-op when `createProject` is absent).
 - `witslog_query::SearchEngine::search` errored unconditionally when called
   with `"*"` or `""` — FTS5 rejects a bare `*`/empty string as `MATCH` syntax
   ("unknown special query"), but that literal was the codebase's own
@@ -154,6 +170,23 @@ independently at pre-1.0 — this file tracks the project as a whole.
     tests (file append, throttle); Node `bindings/browser/test` +
     `bindings/node/test/express_ingest.test.js` (origin/loopback/rate-limit/
     production-guard/severity-clamp regression locks).
+
+## [node-sdk 0.3.0] — 2026-07-17
+
+Version cut for `@all-wits/witslog` on npm specifically (package.json bump; does not move
+the `[Unreleased]` section above, since the Rust crates/CLI/MCP side hasn't cut its own
+release yet — same reasoning as `0.2.0`).
+
+### Added
+
+- `init({ createProject: true })` / `init({ createProject: '/path' })`: scaffolds a
+  `.witslog/` project directory (dir + DB + migrate) via the new native
+  `witslog_bootstrap_project` export before mounting. Closes the gap where `npm install`
+  bundled the native lib but shipped no CLI, so a project that never separately installed
+  and ran `witslog init` had no way to create `.witslog/` — every `log()`/`error()`/`info()`
+  call failed with `rc=-1`. See `bindings/CONTRACT.md` and `bindings/node/README.md`. Only
+  wired into the Node SDK so far; Python/PHP can call the native symbol directly but have
+  no convenience wrapper yet.
 
 ## [node-sdk 0.2.1] — 2026-07-17
 

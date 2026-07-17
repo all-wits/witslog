@@ -23,6 +23,7 @@ breaking change to the payloads below.
 | `witslog_init` | `int32 (const char* json_or_null)` | Mount the process runtime + Rust panic hook. Applies `witslog_configure` payload first (null = defaults). `0`/`-1`/`-2` as above. |
 | `witslog_log` | `int64 (const char* json)` | Log one event (payload below). Returns the DB rowid on the sync path, `0` when buffering is enabled (rowid not yet known), `-1` on error. Never panics. |
 | `witslog_resolve` | `int32 (const char* event_id)` | Mark an event resolved. `0`/`-1`. |
+| `witslog_bootstrap_project` | `int32 (const char* path_or_null)` | Scaffold a `.witslog/` project dir (create dir, open/create DB, migrate) — mirrors CLI `witslog init`. `path_or_null`: project root, or null for cwd. Idempotent. `0`/`-1`. |
 | `witslog_delete` | `char* (const char* filter_json)` | Delete stale/resolved events. Returns a heap JSON string `{"deleted_count":N,"deleted_ids":[...]}` (free via `witslog_free_string`) or null on error. |
 | `witslog_flush` | `int32 (void)` | Drain the async buffer (joins the flush thread). Idempotent. Call before exit. |
 | `witslog_shutdown` | `int32 (void)` | Un-mount: flush + tear down. Alias of `witslog_flush` today. |
@@ -73,6 +74,22 @@ All keys optional; omitted keys keep their current value.
 ```
 
 Only deletes events with `resolved_at IS NOT NULL` unless `force:true`.
+
+## `witslog_bootstrap_project` (no JSON — plain path string or null)
+
+None of the write-path exports (`witslog_log`/`witslog_resolve`/`witslog_delete`) create the
+parent `.witslog/` directory — `SQLITE_OPEN_CREATE` (used internally) creates the DB *file*
+only, not missing parent directories. Historically only the separately-distributed CLI's
+`witslog init` created that directory, which left SDKs installed via a package manager alone
+(no CLI binary bundled) with no way to bootstrap a project. Call
+`witslog_bootstrap_project(path_or_null)` once before the first `witslog_log`/`witslog_init`
+call in a fresh project. Safe to call repeatedly (dir creation and the underlying
+`Store::open_or_create` migrate step are both idempotent).
+
+Currently only the [Node SDK](node) wires this into a convenience API
+(`init({ createProject: true })` / `{ createProject: '/path' }`). Python/PHP can call the
+native symbol directly through their FFI/ctypes/ext-ffi bridge but don't expose a wrapper
+yet — see each SDK's README.
 
 ## Native library location (locator, identical in every SDK)
 
