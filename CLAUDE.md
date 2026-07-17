@@ -16,13 +16,13 @@ Workspace in `crates/`. Built crates:
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | **witslog-core** | Event model, builders, enrichment, redaction, fingerprinting, taxonomy, severity | `event.rs` (Event/EventBuilder/Severity), `taxonomy.rs` (Classifier, builtin categories), `enrich.rs`, `redact.rs`, `fingerprint.rs`, `buffer.rs` |
-| **witslog-store** | SQLite schema, migrations, connections, write path, taxonomy store-layer | `migrate.rs` (M1-M4: init/resolved_at/dropped_counter/seed_taxonomy), `conn.rs` (pragma setup, WAL), `writer.rs` (event insert, fingerprint rollup), `taxonomy.rs` (store CRUD) |
-| **witslog-config** | Layered config resolution, defaults, sections | `lib.rs` (Config struct + EnrichSection/RedactSection/BufferSection/TaxonomySection) |
-| **witslog-query** | FTS5 search + structured filters + aggregates | `search.rs` (bm25 + keyset cursor), `filters.rs`, `aggregates.rs` (stats/timeline/top_failures), `correlate.rs` (edge walks) |
-| **witslog-mcp** | MCP tool registry + JSON-RPC transport | `registry.rs` (all 12 tools), `transport.rs` (stdio JSON-RPC), `tools.rs` (schema) — wired into CLI as `witslog serve-mcp` |
-| **witslog-cli** | CLI subcommands (init/log/get/query/stats/export/import/vacuum/prune/config/archive/backup/list-dbs/migrate/resolve/delete/doctor/category) | `main.rs` (clap Commands) |
+| **witslog-store** | SQLite schema, migrations, connections, write path, taxonomy store-layer | `migrate.rs` (M1-M4 + P9/P10: init/resolved_at/dropped_counter/seed_taxonomy/fts5/audit_chain/audit_tombstones), `conn.rs` (pragma setup, WAL), `writer.rs` (event insert, fingerprint rollup, `mark_resolved`, `delete_events_by_id`), `audit.rs` (hash chain + tombstone-aware `verify_chain`), `taxonomy.rs` (store CRUD) |
+| **witslog-config** | Layered config resolution, defaults, sections | `lib.rs` (Config struct + EnrichSection/RedactSection/BufferSection/TaxonomySection/NotifySection) |
+| **witslog-query** | FTS5 search + structured filters + aggregates | `search.rs` (bm25 + keyset cursor), `filters.rs` (incl. `resolved`), `aggregates.rs` (stats/timeline/top_failures/`mttr`), `correlate.rs` (edge walks) |
+| **witslog-mcp** | MCP tool registry + JSON-RPC transport | `registry.rs` (13 tools incl. read-only `mttr`), `transport.rs` (stdio JSON-RPC), `tools.rs` (schema) — wired into CLI as `witslog serve-mcp` |
+| **witslog-cli** | CLI subcommands (init/log/get/query/stats/export/import/vacuum/prune/config/archive/backup/list-dbs/migrate/resolve/delete/doctor/category) | `main.rs` (clap Commands; `query --unresolved`, `stats --mttr`, `resolve --force`) |
 | **witslog-ffi** | C ABI for embedding | `lib.rs` (witslog_log, witslog_resolve, witslog_delete, witslog_init/flush/shutdown) |
-| **witslog-runtime** | Ambient "Provider" — mount-once init-guard, ambient capture, panic hook, `tracing` Layer, `Result::log_err`, shared enrich→redact→classify→write pipeline | `lib.rs` (init/Guard/arm/capture/build_and_write/LogErr/macros), `tracing_layer.rs` (feature `tracing`) |
+| **witslog-runtime** | Ambient "Provider" — mount-once init-guard, ambient capture, panic hook, `tracing` Layer, `Result::log_err`, shared enrich→redact→classify→write pipeline, notifier dispatch | `lib.rs` (init/Guard/arm/capture/build_and_write/LogErr/macros), `notify.rs` (`FileNotifier`/`ThrottledNotifier`, P10), `tracing_layer.rs` (feature `tracing`) |
 | **witslog-plugin** | P9 extension points — six traits + `PluginRegistry` with panic-isolated dispatch (static registration only, no dynamic loading) | `lib.rs` (`TaxonomyRule`/`Exporter`/`Enricher`/`StorageBackend`/`Notifier`/`McpTool`, `PluginRegistry`) |
 
 **SDK bindings** (P6, outside `crates/`): `bindings/python` (ctypes, 0 deps) + `bindings/node` (koffi) +
@@ -31,6 +31,9 @@ Workspace in `crates/`. Built crates:
 `bindings/node/frameworks/express.js`, `bindings/php/src/Laravel/WitslogServiceProvider.php`).
 Contract: **bindings/CONTRACT.md**. e2e/regression driver: `bindings/e2e/run.ps1` (workspace test
 gate + per-language SDK↔CLI readback + argv-mitigation lock — see Gotchas).
+**Browser reporter** (P10, outside `crates/` and `bindings/{python,node,php}`): `bindings/browser/witslog-browser.js`
+— zero-dep client-side capture, ships batches to `witslogBrowserIngest` (`bindings/node/frameworks/express.js`)
+or a ported Python/PHP handler (recipe in `bindings/CONTRACT.md`); see Gotchas for the trust-boundary rules.
 
 ## Specs & Docs
 
@@ -89,6 +92,7 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 - ✅ **P7**: Perf + hardening. Criterion bench suite (`bench/`: write throughput, buffered-log latency, search latency, FTS index-build cost), concurrency harness (`witslog-store/tests/p7_concurrency.rs`, 8 independent connections on one DB, zero loss + `integrity_check=ok`), load harness (`p7_load.rs`, scales via `WITSLOG_LOAD_TEST_ROWS`), memory script (`scripts/measure_memory.ps1`), CI (`.github/workflows/ci.yml`) with a bench-regression gate (`scripts/check_bench_regression.ps1`). Docs: `docs/perf.md`.
 - 🟡 **P8**: Packaging + install. Version-compat guard (`witslog-store::CURRENT_SCHEMA_VERSION`, refuses newer-than-binary schema), `serve-mcp --print-mcp-config`, `uninstall [--purge]`, migrate `.bak` restore-on-failure, install scripts (`install/install.sh`/`.ps1`), release workflow with a `smoke_test` job (`.github/workflows/release.yml`: builds per OS, runs the real init/log/query/serve-mcp/doctor/uninstall happy path, gates `publish`), Homebrew/Scoop manifest templates, `docs/install.md`. winget/`.deb`/`.rpm` intentionally out of scope — `cargo install`/npm/pip/composer already cover cross-platform distribution pre-1.0. Workflow confirmed green via `workflow_dispatch` on real Linux/macOS/Windows runners (build matrix + smoke_test). Missing: cutting a real `v*.*.*` tag to exercise `publish`.
 - 🟡 **P9**: Extensibility + security. `witslog-plugin` crate (6 traits + panic-isolated registry). Audit hash chain (`migrate_0006_audit_chain`, `witslog-store::audit`, `witslog doctor --verify-audit`). File-perm hardening (0600 DB, Unix). Field-level encryption (`witslog-core::crypto::FieldCipher`, AES-256-GCM on `metadata`) — full SQLCipher whole-DB encryption deliberately deferred (conflicts with FTS5/generated columns; see PHASES.md §P9). Config-driven redaction was already done in P1.
+- ✅ **P10**: MTTR/resolution tracking, notifiers, browser-side error capture. Audit tombstones (`migrate_0007_audit_tombstones`, schema v6→7) fixed a pre-existing bug where `delete`/`prune`/`archive` permanently broke `doctor --verify-audit`; `EventWriter::delete_events_by_id` is now the one path all three routes go through. `EventWriter::mark_resolved` returns `Result<bool>` and guards `resolved_at IS NULL` unless `force`. `Filters.resolved` + `AggregateEngine::mttr` (fingerprint-level mean, not per-event); CLI `query --unresolved`/`stats --mttr`/`resolve --force`; MCP read-only `mttr` tool + `resolved` filter (deliberately no write tool for resolution — see Gotchas). `witslog_plugin::Notifier` (defined in P9, unused until now) wired into `witslog-runtime` via `[notify]` config + builtin `FileNotifier`/`ThrottledNotifier` — no webhook/HTTP dep. Browser reporter + `witslogBrowserIngest` (see Crate Map). Full rationale + what was cut after adversarial review: PHASES.md §P10.
 
 **Critical path**: P0 → P3 → P5 → P8. P1/P2 parallelizable.
 
@@ -97,6 +101,7 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 1. **P4**: add global `--json` output flag.
 2. **P8**: cut a real `v*.*.*` tag to exercise the `publish` job.
 3. **P9**: revisit dynamic plugin loading and full DB-at-rest encryption if a real need shows up — see PHASES.md §P9 for why both were scoped down.
+4. **P10**: Python/PHP browser-ingest adapters if the Node one proves out (currently a documented recipe only, `bindings/CONTRACT.md`); `ingest_source` provenance in the payload contract would need an ABI-version bump.
 
 ## Dev Workflow
 
@@ -139,7 +144,13 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 - **Plugin dispatch always isolates panics**: every `PluginRegistry` call (`classify`, `run_enrichers`, `dispatch_event`, `export_all`, `call_mcp_tool`) wraps the plugin call in `catch_unwind` — a panicking plugin surfaces as `PluginError::Panicked` or is silently skipped (taxonomy/enrich), never unwinds into the core write path.
 - **`FieldCipher` only covers `metadata`**: `witslog-core::crypto::FieldCipher::encrypt_metadata` is the only wired encryption hook. `message`/`context`/`stack_norm` etc. stay plaintext because FTS5 and the `GENERATED ALWAYS AS (json_extract(context, ...))` columns need to read them — encrypting those would silently break search and the hot query axes.
 - **ABI is versioned**: `witslog_abi_version()` returns `WITSLOG_ABI_VERSION` (currently `1`, in `witslog-ffi/src/lib.rs`). Every SDK core checks it at load time and raises `WitslogContractError` on mismatch — bump the constant on any breaking change to the `witslog_log`/`witslog_configure` JSON payloads and update **bindings/CONTRACT.md** in the same change.
+- **Deleting a row without going through the store layer breaks the audit chain**: `verify_chain` bridges an `id` gap only via `audit_tombstones` (written by `writer::delete_events_by_id`, called from `delete_resolved`/`cmd_prune`/`cmd_archive`). A raw `DELETE FROM events` anywhere else leaves an untombstoned gap that `doctor --verify-audit` reports as `Broken` — indistinguishable from tampering. Route every new delete path through `EventWriter::delete_by_ids`/`delete_resolved`, never a bare `DELETE`.
+- **MTTR is fingerprint-level, not event-level, on purpose**: `AggregateEngine::mttr` computes `MIN(resolved_at) − MIN(ts)` per fingerprint, not per event — a fingerprint firing hundreds of times before one fix would otherwise measure error volume and report it as recovery time. Duration is computed in Rust from parsed RFC3339 (`ts`/`resolved_at` are TEXT with no epoch-ms mirror), not SQL `julianday`.
+- **`mark_resolved` is idempotent by default**: `EventWriter::mark_resolved(event_id, force)` only sets `resolved_at` when it's currently `NULL` unless `force:true`, and returns `Ok(false)` (not an error) when nothing matched — callers (CLI `resolve`, FFI `witslog_resolve`) must check the bool/return code rather than assuming success.
+- **No MCP write tool for resolution, deliberately**: PLAN.md §5 made `witslog_delete` the only write tool. A `witslog_resolve` MCP tool was considered and rejected — it would let an agent silently qualify rows for `witslog_delete`'s `resolved_at IS NOT NULL` default filter, handing out delete through the back door. `mttr` and the `resolved` filter are read-only.
+- **Notifier dispatch never happens from the panic-hook's sync path**: `witslog-runtime::write_via_snapshot`/`build_and_write` dispatch to `[notify]`'s `PluginRegistry` after a successful write, but `capture_sync` (used only by the panic hook, since a panic may precede process abort) explicitly skips it — notifier I/O in that path is the one place a stall is unacceptable. `PluginRegistry::dispatch_event` already isolates notifier panics/failures (see the P9 gotcha above), so this is belt-and-suspenders, not the only safeguard.
+- **Browser ingest text is untrusted input reaching the AI, not just a size-limit problem**: `witslogBrowserIngest` (`bindings/node/frameworks/express.js`) writes into `events.message`, which MCP serves verbatim to an LLM. The Origin allowlist (default: none) is the real defense — a same-machine malicious page POSTing to `localhost` has `remoteAddress` `127.0.0.1` regardless, so a loopback check alone doesn't stop it. `tags:['browser']` is advisory only (merged by `classify()`, not enforced) — it is not proof of origin.
 
 ---
 
-Last updated: 2026-07-17 (P9 added). Reflect code reality, not aspirational state.
+Last updated: 2026-07-17 (P10 added: MTTR/resolution tracking, notifiers, browser-side error capture — see PHASES.md §P10). Reflect code reality, not aspirational state.

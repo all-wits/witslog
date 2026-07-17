@@ -821,6 +821,112 @@ encryption/audit in a temp project → confirm redacted-at-rest, key-gated acces
 
 ---
 
+## P10 — MTTR/resolution tracking, notifiers, browser-side error capture
+
+**Objective.** Land the three PLAN.md §10 deferred enhancements: fingerprint-level MTTR
+over the existing `resolved_at` lifecycle, wiring `witslog_plugin::Notifier` (defined in
+P9, never dispatched) into the write path, and a browser error reporter + ingest
+endpoint so client-side JS errors join the same queryable DB as server-side ones — the
+goal being an MCP-connected AI assistant that sees both halves of a failure without a
+human bridging the gap manually.
+
+**Status.** ✅ shipped. A `/feature-forge` requirements pass + an adversarial
+`/cto-advisor` review (using only the indexed code graph, no grep/read) surfaced a
+pre-existing production bug that reframed the phase: `delete`/`prune`/`archive`
+permanently broke `doctor --verify-audit` for every row after the deleted one, because
+`verify_chain` had no way to distinguish a documented removal from tampering. Fixing
+that (audit tombstones) was promoted to a blocker and done first. Cut from the original
+draft after the review: `resolved_by`/`resolution_note` columns (the audit chain can't
+back them — see FR-P10-004), a `witslog_resolve` MCP write tool (composes into
+`witslog_delete`'s default filter — see FR-P10-005), webhook notifiers + the `ureq` dep
+(`witslog-runtime` is `dlopen`'d into every host process — see FR-P10-006), and
+event-level MTTR percentiles (not statistically honest for a recurring fingerprint).
+
+**Dependencies.** P1–P6 (MTTR/resolution builds on P3/P4's query engine and P5's MCP
+registry), P9 (notifiers wire the `Notifier` trait/`PluginRegistry` that phase defined).
+**Complexity.** M.
+
+**Functional requirements (EARS).**
+- **FR-P10-001** (ubiquitous): The system shall record a tombstone (the row's
+  `audit_hash`) for any event removed via `delete`/`prune`/`archive`, and
+  `doctor --verify-audit` shall bridge a tombstoned id gap rather than reporting it as
+  tampering; an untombstoned gap shall still report `Broken`.
+- **FR-P10-002** (event): When `witslog resolve <id>` runs without `--force`, the system
+  shall set `resolved_at` only if it was previously `NULL`, and shall report failure
+  (non-zero exit / `false` return) when no row matched.
+- **FR-P10-003** (optional): Where `resolved` is passed as a query/MCP filter, the system
+  shall restrict results to `resolved_at IS NULL` (`false`) or `IS NOT NULL` (`true`).
+- **FR-P10-004** (ubiquitous): The system shall compute MTTR at fingerprint granularity
+  (`MIN(resolved_at) − MIN(ts)` per fingerprint), not per-event.
+- **FR-P10-005** (ubiquitous): The system shall NOT expose a write-capable MCP tool for
+  resolution — `witslog_delete` remains the sole write tool (PLAN.md §5).
+- **FR-P10-006** (optional): Where `[notify]` is enabled with a `path`, the system shall
+  append one NDJSON line per event meeting `min_severity` after a successful write, via
+  the existing `witslog_plugin::Notifier`/`PluginRegistry` extension point, and shall
+  never perform this dispatch from the panic-hook's forced-sync write path.
+- **FR-P10-007** (optional): Where a browser reporter is installed, the system shall
+  batch `window.onerror`/`unhandledrejection` events and ship them via
+  `navigator.sendBeacon` (falling back to `fetch(...,{keepalive:true})`) to a
+  server-side ingest endpoint, which shall reject requests whose `Origin` is not on an
+  explicit allowlist (default: none) and shall refuse to arm under
+  `NODE_ENV=production` unless explicitly forced.
+
+**Non-functional.**
+- Audit tombstoning shall add no more than one extra row-lookup per deleted event; it
+  shall not change `verify_chain`'s behavior on a DB with no deletions.
+- Notifier dispatch shall never block the panic-hook's synchronous write path, and a
+  notifier failure (including a panic) shall never fail the underlying event write.
+- The browser ingest endpoint shall clamp severity to `error`/`warn` only and cap
+  message/stacktrace/batch/body size — untrusted input must never reach `events.message`
+  unbounded, since MCP serves that column verbatim to an LLM.
+
+**Acceptance criteria.**
+- Given a resolved event, when `witslog delete --event-id <id>` then
+  `witslog doctor --verify-audit` runs, then it reports `Ok` (with the removed row noted
+  as bridged), not `Broken`.
+- Given a fingerprint with several unresolved events and one resolved, when
+  `witslog stats --mttr` runs, then it reports exactly one resolved fingerprint whose
+  duration is `first resolved_at − first ts`, not one duration per event.
+- Given `[notify]` enabled with a file path, when an event at or above `min_severity` is
+  logged, then one NDJSON line appears in the target file; when the same happens during
+  a captured panic, then no line appears.
+- Given `witslogBrowserIngest` mounted with a non-empty `allowedOrigins`, when a request
+  arrives with an origin not on that list, then it is rejected with 403 and no event is
+  persisted.
+
+**Error handling.**
+| Condition | Detection | Response |
+|---|---|---|
+| `resolve` on unknown/already-resolved id (no `--force`) | `mark_resolved` returns `false` | CLI exits non-zero with a clear message; FFI returns `-1` |
+| Row removed without a tombstone (bypassed the store layer) | `verify_chain` gap lookup misses | report `Broken` — undocumented removal stays indistinguishable from tampering |
+| Notifier write fails or panics | `PluginRegistry::dispatch_event` catch_unwind | isolate, drop the error, never fail the write |
+| Browser ingest: oversized body / bad JSON / disallowed origin / rate-limited | per-check in `witslogBrowserIngest` | 413 / 400 / 403 / 429, no event persisted |
+
+**TODO checklist.**
+- [x] `migrate_0007_audit_tombstones` + `writer::delete_events_by_id` (single path for
+      `delete_resolved`/`cmd_prune`/`cmd_archive`) + `audit::verify_chain` gap-bridging.
+- [x] `EventWriter::mark_resolved` → `Result<bool>` + `AND resolved_at IS NULL` guard.
+- [x] `Filters.resolved` + `AggregateEngine::mttr` (fingerprint-level, mean only).
+- [x] CLI: `resolve --force`, `query --unresolved`, `stats --mttr`.
+- [x] MCP: read-only `mttr` tool, `resolved` on common filters, `top_failures` filter bug fix.
+- [x] `[notify]` config section + `witslog-runtime::notify::{FileNotifier, ThrottledNotifier}`
+      wired into `build_and_write`/`write_via_snapshot`, excluded from `capture_sync`.
+- [x] `bindings/browser/witslog-browser.js` + `witslogBrowserIngest` in
+      `bindings/node/frameworks/express.js`.
+- [x] `bindings/e2e/run.ps1` Gate 4 (`browser_ingest_smoke.js`): posts a browser-shaped
+      batch through `witslogBrowserIngest` backed by the real native FFI (not a fake
+      lib), reads it back via the real CLI.
+- [ ] Python/PHP browser-ingest adapters — deliberately not shipped; recipe documented in
+      `bindings/CONTRACT.md` instead (revisit if the Node one proves out).
+
+**Verification.** `cargo test --workspace` + `cargo clippy --workspace`; manual
+`init → log ×3 → query --unresolved → resolve → stats --mttr → delete → doctor
+--verify-audit` round-trip on a scratch project; `node --test` in `bindings/node` and
+`bindings/browser`; mount `witslogBrowserIngest` and confirm a disallowed-origin POST is
+rejected and an allowed one round-trips through `witslog query`.
+
+---
+
 ## Appendix — requirement traceability
 
 Each `FR-<PHASE>-NNN` should be cited in the implementing commit and covered by at least one

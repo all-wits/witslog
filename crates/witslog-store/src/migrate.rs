@@ -3,7 +3,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this binary knows how to read/write (FR-P8-007).
 /// Bump alongside adding a new `migrate_000N_*` step.
-pub const CURRENT_SCHEMA_VERSION: i32 = 6;
+pub const CURRENT_SCHEMA_VERSION: i32 = 7;
 
 pub struct Migrator<'a> {
     conn: &'a Connection,
@@ -72,6 +72,11 @@ impl<'a> Migrator<'a> {
         if current_version < 6 {
             self.migrate_0006_audit_chain()?;
             self.record_migration(6, "audit_chain")?;
+        }
+
+        if current_version < 7 {
+            self.migrate_0007_audit_tombstones()?;
+            self.record_migration(7, "audit_tombstones")?;
         }
 
         Ok(())
@@ -318,6 +323,24 @@ impl<'a> Migrator<'a> {
         // Back-fill any pre-existing rows (from a DB migrated up from <v6)
         // into the chain, oldest first, so the chain covers full history.
         crate::audit::backfill_chain(self.conn)?;
+
+        Ok(())
+    }
+
+    /// FR-P10-001: records the `audit_hash` of any row removed by
+    /// `delete`/`prune`/`archive` before it's deleted, so `verify_chain` can
+    /// bridge the resulting id gap instead of reporting it as tampering.
+    fn migrate_0007_audit_tombstones(&self) -> Result<()> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS audit_tombstones (
+              row_id     INTEGER PRIMARY KEY,
+              event_id   TEXT NOT NULL,
+              audit_hash TEXT NOT NULL,
+              deleted_at TEXT NOT NULL
+            );
+            "#,
+        )?;
 
         Ok(())
     }

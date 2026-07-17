@@ -29,7 +29,7 @@ fn setup_db_with_events() -> DbConnection {
         .severity(Severity::Warn)
         .build();
     writer.write(&resolved).unwrap();
-    writer.mark_resolved(&resolved.event_id).unwrap();
+    writer.mark_resolved(&resolved.event_id, false).unwrap();
 
     db
 }

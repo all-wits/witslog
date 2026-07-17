@@ -113,17 +113,39 @@ pub struct AuditBreak {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditVerifyResult {
-    Ok { rows_checked: i64 },
+    Ok { rows_checked: i64, tombstones_bridged: i64 },
     Broken(AuditBreak),
 }
 
+/// Looks up the tombstoned `audit_hash` for a deleted row, if any (FR-P10-001).
+fn tombstone_hash(conn: &Connection, row_id: i64) -> Result<Option<String>> {
+    let hash: Option<String> = conn
+        .query_row(
+            "SELECT audit_hash FROM audit_tombstones WHERE row_id = ?1",
+            [row_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(hash)
+}
+
 /// Walks `events` in `id` order, recomputing the chain from genesis and
-/// comparing against the stored `audit_hash` on each row. Returns the first
-/// divergence found (FR-P9-007: `doctor --verify-audit` reports the
-/// offending row + expected/actual hash).
+/// comparing against the stored `audit_hash` on each row. When the `id`
+/// sequence gaps (a row was removed by `delete`/`prune`/`archive`), bridges
+/// the gap using the tombstoned hash of the row immediately preceding it
+/// (`id - 1`) rather than reporting the gap as tampering — that hash already
+/// encodes the full chain up to that point, regardless of how many rows in
+/// the gap were removed. A gap with no matching tombstone is still reported
+/// as `Broken`: undocumented row removal stays indistinguishable from
+/// tampering, which is the point of the chain.
+///
+/// Returns the first genuine divergence found (FR-P9-007: `doctor
+/// --verify-audit` reports the offending row + expected/actual hash).
 pub fn verify_chain(conn: &Connection) -> Result<AuditVerifyResult> {
     let mut prev = GENESIS.to_string();
+    let mut prev_id = 0i64;
     let mut rows_checked = 0i64;
+    let mut tombstones_bridged = 0i64;
 
     let mut stmt = conn.prepare(
         "SELECT id, event_id, ts, message, fingerprint, audit_hash FROM events ORDER BY id ASC",
@@ -143,6 +165,23 @@ pub fn verify_chain(conn: &Connection) -> Result<AuditVerifyResult> {
     drop(stmt);
 
     for (id, event_id, ts, message, fingerprint, stored) in rows {
+        if id != prev_id + 1 {
+            match tombstone_hash(conn, id - 1)? {
+                Some(bridge) => {
+                    prev = bridge;
+                    tombstones_bridged += 1;
+                }
+                None => {
+                    return Ok(AuditVerifyResult::Broken(AuditBreak {
+                        row_id: id,
+                        event_id,
+                        expected_hash: String::new(),
+                        actual_hash: stored,
+                    }));
+                }
+            }
+        }
+
         let expected = compute_hash(&prev, &event_id, &ts, &message, &fingerprint);
         if stored.as_deref() != Some(expected.as_str()) {
             return Ok(AuditVerifyResult::Broken(AuditBreak {
@@ -153,10 +192,11 @@ pub fn verify_chain(conn: &Connection) -> Result<AuditVerifyResult> {
             }));
         }
         prev = expected;
+        prev_id = id;
         rows_checked += 1;
     }
 
-    Ok(AuditVerifyResult::Ok { rows_checked })
+    Ok(AuditVerifyResult::Ok { rows_checked, tombstones_bridged })
 }
 
 #[cfg(test)]
@@ -186,7 +226,10 @@ mod tests {
         }
 
         match verify_chain(&conn).unwrap() {
-            AuditVerifyResult::Ok { rows_checked } => assert_eq!(rows_checked, 3),
+            AuditVerifyResult::Ok { rows_checked, tombstones_bridged } => {
+                assert_eq!(rows_checked, 3);
+                assert_eq!(tombstones_bridged, 0);
+            }
             other => panic!("expected Ok, got {:?}", other),
         }
     }
@@ -237,8 +280,75 @@ mod tests {
         backfill_chain(&conn).unwrap();
 
         match verify_chain(&conn).unwrap() {
-            AuditVerifyResult::Ok { rows_checked } => assert_eq!(rows_checked, 1),
+            AuditVerifyResult::Ok { rows_checked, .. } => assert_eq!(rows_checked, 1),
             other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    fn insert_chained(conn: &Connection, event_id: &str, msg: &str, fp: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO events (event_id, ts, ts_epoch_ms, application, severity, severity_rank, message, fingerprint, schema_v)
+             VALUES (?1, '2026-01-01T00:00:00.000Z', 0, 'app', 'error', 60, ?2, ?3, 1)",
+            rusqlite::params![event_id, msg, fp],
+        )
+        .unwrap();
+        let row_id = conn.last_insert_rowid();
+        append(conn, row_id, event_id, "2026-01-01T00:00:00.000Z", msg, fp).unwrap();
+        row_id
+    }
+
+    /// Regression lock (FR-P10-001): deleting a row and recording its
+    /// tombstone must keep `verify_chain` reporting `Ok` — this is the fix
+    /// for the bug where any `delete`/`prune`/`archive` permanently broke
+    /// `doctor --verify-audit` for every row after the deleted one.
+    #[test]
+    fn deleting_a_row_keeps_verify_chain_ok() {
+        let conn = fresh_conn();
+        let ids: Vec<i64> = (0..3)
+            .map(|i| insert_chained(&conn, &format!("evt-{i}"), &format!("msg {i}"), &format!("fp-{i}")))
+            .collect();
+
+        // Tombstone + delete the middle row, mirroring
+        // `writer::delete_events_by_id`.
+        let hash: String = conn
+            .query_row(
+                "SELECT audit_hash FROM events WHERE id = ?1",
+                [ids[1]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO audit_tombstones (row_id, event_id, audit_hash, deleted_at) VALUES (?1, 'evt-1', ?2, '2026-01-01T00:00:00.000Z')",
+            rusqlite::params![ids[1], hash],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM events WHERE id = ?1", [ids[1]]).unwrap();
+
+        match verify_chain(&conn).unwrap() {
+            AuditVerifyResult::Ok { rows_checked, tombstones_bridged } => {
+                assert_eq!(rows_checked, 2);
+                assert_eq!(tombstones_bridged, 1);
+            }
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    /// The other half of the regression lock: a gap with no recorded
+    /// tombstone must still report `Broken` — undocumented row removal stays
+    /// indistinguishable from tampering.
+    #[test]
+    fn deleted_row_without_tombstone_still_breaks_chain() {
+        let conn = fresh_conn();
+        let ids: Vec<i64> = (0..3)
+            .map(|i| insert_chained(&conn, &format!("evt-{i}"), &format!("msg {i}"), &format!("fp-{i}")))
+            .collect();
+
+        // Delete the middle row WITHOUT recording a tombstone.
+        conn.execute("DELETE FROM events WHERE id = ?1", [ids[1]]).unwrap();
+
+        match verify_chain(&conn).unwrap() {
+            AuditVerifyResult::Broken(b) => assert_eq!(b.event_id, "evt-2"),
+            other => panic!("expected Broken, got {:?}", other),
         }
     }
 }

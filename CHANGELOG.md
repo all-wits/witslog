@@ -7,6 +7,24 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Fixed
+
+- `witslog_query::SearchEngine::search` errored unconditionally when called
+  with `"*"` or `""` — FTS5 rejects a bare `*`/empty string as `MATCH` syntax
+  ("unknown special query"), but that literal was the codebase's own
+  "match everything, just apply filters" convention: the MCP `latest_errors`
+  tool, `similar_errors`'s fingerprint mode, and any user running
+  `witslog query "*"` all failed every time, regardless of filters. Fixed by
+  special-casing an empty/whitespace-only/`"*"` query to skip the FTS5 join
+  entirely and query `events` directly (ordered by recency — there's no bm25
+  rank without a real FTS match); a genuine FTS syntax error is still
+  rejected. Predates P10 (confirmed via `git diff` against the P10 session);
+  found in passing while proving P10's MCP `resolved`-filter surface with a
+  real client. Regression lock:
+  `witslog-query::search::tests::match_all_query_returns_filtered_results`
+  (+ `..._honours_filters_and_orders_by_recency`,
+  `non_match_all_bad_syntax_still_errors`).
+
 ### Added
 
 - **P9 — Extensibility + security**:
@@ -50,6 +68,116 @@ independently at pre-1.0 — this file tracks the project as a whole.
     `tests/p9_integration.rs` drives the real binary end-to-end (`doctor
     --verify-audit` clean vs. tampered, plus a Unix-only 0600/0700
     permission regression).
+
+- **P10 — MTTR/resolution tracking, notifiers, browser-side error capture**:
+  - **Audit tombstones (blocker fix, FR-P10-001)**: `delete`/`prune`/`archive`
+    previously broke `doctor --verify-audit` permanently for every row after
+    the deleted one, because `verify_chain` recomputed the hash chain over
+    surviving `id`s with no way to account for a gap — indistinguishable from
+    tampering. `migrate_0007_audit_tombstones` adds an `audit_tombstones`
+    table recording each deleted row's `audit_hash` before removal;
+    `witslog-store::writer::delete_events_by_id` is now the single path all
+    three delete sites (`delete_resolved`, `cmd_prune`, `cmd_archive`) route
+    through (previously `prune`/`archive` ran raw `DELETE` in the CLI,
+    reaching around the store layer); `audit::verify_chain` bridges a gap via
+    its tombstone hash and reports it as informational
+    (`tombstones_bridged`), while an undocumented gap still reports `Broken`.
+    `CURRENT_SCHEMA_VERSION` bumped 6→7 for this migration alone.
+  - MTTR is **fingerprint-level, not event-level** (`AggregateEngine::mttr`):
+    `MIN(resolved_at) − MIN(ts)` per fingerprint among events matching the
+    filter — "time from first sighting to first fix" — deliberately not
+    per-event, since a fingerprint firing hundreds of times before one fix
+    would otherwise measure error volume and report it as recovery time. Mean
+    only in v1 (no percentiles — `ts`/`resolved_at` are TEXT with no
+    epoch-ms mirror, so duration is computed from parsed RFC3339 in Rust, not
+    SQL `julianday`).
+  - `EventWriter::mark_resolved` now returns `Result<bool>` and guards
+    `resolved_at IS NULL` unless `force:true` (previously ignored the
+    affected-row count, so it silently "succeeded" on an unknown `event_id`
+    and could move `resolved_at` on a re-resolve). `witslog_resolve` (FFI)
+    and `witslog resolve <id> [--force]` (CLI) updated to match.
+  - `witslog_query::Filters.resolved: Option<bool>` (`resolved_at IS
+    NULL`/`IS NOT NULL`); surfaced as `witslog query --unresolved`,
+    `witslog stats --mttr`, and `resolved` on the MCP common-filters object.
+    Also fixed `top_failures` (MCP), which hardcoded `Filters::default()` and
+    silently ignored every filter param a caller passed.
+  - New read-only MCP tool `mttr`. **No MCP write tool for resolution** —
+    PLAN.md §5 deliberately made `witslog_delete` the only write tool, and a
+    resolve tool would let an agent silently qualify rows for
+    `witslog_delete`'s `resolved_at IS NOT NULL` default filter.
+  - Notifiers: new `[notify]` config section (`enabled`, `min_severity`,
+    `path`, `once_per_fingerprint_secs`) wires `witslog_plugin::Notifier`
+    (P9, previously defined but never dispatched from the write path) into
+    `witslog-runtime`. Builtin `FileNotifier` (NDJSON append) only — no
+    webhook/HTTP dependency: `witslog-runtime` links into `witslog-ffi`,
+    which is `dlopen`'d into every Python/Node/PHP host process, so adding an
+    HTTP client there was rejected; `Notifier` is already the extension
+    point for anyone who wants a webhook. Dispatch is synchronous
+    post-write in `build_and_write`/`write_via_snapshot`, but **never** from
+    the panic hook's forced-sync path (`capture_sync`) — a panic may precede
+    process abort, and notifier I/O in that path is the one place a stall is
+    unacceptable.
+  - Browser-side error capture (PLAN.md §10): `bindings/browser/witslog-browser.js`,
+    a zero-dep reporter installing `window.onerror`/`unhandledrejection`,
+    batching, and shipping via `navigator.sendBeacon` (fallback
+    `fetch(...,{keepalive:true})`), flushing on `pagehide`/hidden. Server-side
+    ingest via `witslogBrowserIngest` in `bindings/node/frameworks/express.js`
+    — the request body is untrusted input whose text reaches
+    `events.message`, which MCP serves verbatim to an LLM, so this is armed
+    fail-closed: empty `allowedOrigins` by default (Origin check, not just a
+    loopback check, since the real attack is a malicious page open in the
+    *same* browser as the dev server doing a same-machine cross-origin POST),
+    refuses to arm under `NODE_ENV=production` unless `force:true`, a
+    token-bucket rate limit (per-request size caps alone don't bound request
+    *volume*), and severity clamped to `error|warn` (never `fatal`/`critical`
+    from untrusted input) plus message/stacktrace/batch/body size caps.
+    Python/PHP ingest intentionally not shipped as adapters — documented as a
+    recipe in `bindings/CONTRACT.md` instead. `tags:['browser']` is advisory,
+    not a trust boundary (`classify()` merges suggested tags); true
+    provenance (`ingest_source` in the payload contract) would need an
+    ABI-version bump and is out of scope here.
+  - Deliberately out of scope: `resolved_by`/`resolution_note` columns (the
+    audit chain hashes `event_id|ts|message|fingerprint` only, so a "who
+    resolved this" field would be unauthenticated and unverifiable on a
+    single-user local tool with no identity system — resolution provenance,
+    if ever needed, is a child event with `parent_event_id`); resolution
+    SLAs/reopen-tracking; notifier retries/queues; dynamic plugin loading.
+  - Tests: `witslog-store::audit` regression locks
+    (`deleting_a_row_keeps_verify_chain_ok`,
+    `deleted_row_without_tombstone_still_breaks_chain`); `witslog-query`
+    unit tests for the `resolved` filter axis and fingerprint-level MTTR
+    (`mttr_excludes_unresolved_fingerprints`); `witslog-runtime`
+    `tests/p6_integration.rs` regression locks
+    (`notifier_never_dispatches_from_panic_path`,
+    `notifier_dispatches_on_normal_capture`,
+    `notifier_failure_does_not_fail_write`); `witslog-runtime::notify` unit
+    tests (file append, throttle); Node `bindings/browser/test` +
+    `bindings/node/test/express_ingest.test.js` (origin/loopback/rate-limit/
+    production-guard/severity-clamp regression locks).
+
+## [node-sdk 0.2.0] — 2026-07-17
+
+Version cut for `@all-wits/witslog` on npm specifically (package.json bump;
+does not move the `[Unreleased]` section above, since the Rust
+crates/CLI/MCP side of P10 hasn't cut its own release yet). Prepared for
+publish via `release-node-sdk.yml` (`workflow_dispatch`, manual, `publish:
+true`) — not auto-triggered by merging to `main`.
+
+### Added
+
+- `witslogBrowserIngest` in `bindings/node/frameworks/express.js` (P10):
+  Express handler accepting batches from `bindings/browser/witslog-browser.js`.
+  New export; existing `witslogErrorHandler` unchanged.
+
+### Fixed
+
+- The bundled native lib's `witslog_resolve` now guards `resolved_at IS
+  NULL` (first resolution wins) and returns `-1` on an unknown or
+  already-resolved event id, instead of silently reporting success and
+  potentially moving `resolved_at` on a re-resolve. No JS-facing API change
+  (still `witslog_resolve(event_id_ptr) -> i32`), but the bundled binary
+  behaves differently — republishing is what actually ships this fix to
+  Node SDK users, since it lives in `_libs/<platform>/`, not JS source.
 
 ## [0.1.1] — 2026-07-17
 

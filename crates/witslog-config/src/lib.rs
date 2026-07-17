@@ -11,6 +11,7 @@ pub struct Config {
     pub redact: RedactSection,
     pub buffer: BufferSection,
     pub taxonomy: TaxonomySection,
+    pub notify: NotifySection,
 }
 
 impl Default for Config {
@@ -88,6 +89,35 @@ impl Default for TaxonomySection {
     }
 }
 
+/// Config for the P10c file notifier (`witslog_plugin::Notifier`, wired in
+/// `witslog-runtime`). Webhook/desktop notifiers deliberately not offered
+/// here — `witslog-runtime` links into `witslog-ffi`, which is `dlopen`'d
+/// into every host process, so adding an HTTP client dependency there was
+/// rejected; anyone wanting a webhook implements `Notifier` themselves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotifySection {
+    pub enabled: bool,
+    /// Minimum severity that triggers a notification (`Severity::as_str()` values).
+    pub min_severity: String,
+    /// NDJSON append target for the builtin file notifier.
+    pub path: Option<PathBuf>,
+    /// Suppress repeat notifications for the same fingerprint within this
+    /// many seconds. `None`/`0` = no throttle.
+    pub once_per_fingerprint_secs: Option<u64>,
+}
+
+impl Default for NotifySection {
+    fn default() -> Self {
+        NotifySection {
+            enabled: false,
+            min_severity: "error".to_string(),
+            path: None,
+            once_per_fingerprint_secs: None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read config file {path}: {source}")]
@@ -144,6 +174,7 @@ impl Config {
             redact: RedactSection::default(),
             buffer: BufferSection::default(),
             taxonomy: TaxonomySection::default(),
+            notify: NotifySection::default(),
         }
     }
 
@@ -225,5 +256,40 @@ pub fn resolve_global_db() -> PathBuf {
         let xdg_data = std::env::var("XDG_DATA_HOME")
             .unwrap_or_else(|_| format!("{}/.local/share", home));
         PathBuf::from(xdg_data).join("witslog/global.db")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notify_defaults_to_disabled() {
+        let cfg = Config::default_project();
+        assert!(!cfg.notify.enabled);
+        assert_eq!(cfg.notify.min_severity, "error");
+        assert_eq!(cfg.notify.path, None);
+    }
+
+    #[test]
+    fn notify_section_parses_from_toml() {
+        let toml_str = r#"
+            [notify]
+            enabled = true
+            min_severity = "warn"
+            path = "/tmp/witslog-notify.ndjson"
+            once_per_fingerprint_secs = 300
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.notify.enabled);
+        assert_eq!(cfg.notify.min_severity, "warn");
+        assert_eq!(cfg.notify.path, Some(PathBuf::from("/tmp/witslog-notify.ndjson")));
+        assert_eq!(cfg.notify.once_per_fingerprint_secs, Some(300));
+    }
+
+    #[test]
+    fn config_without_notify_section_uses_defaults() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(!cfg.notify.enabled);
     }
 }

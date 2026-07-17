@@ -318,8 +318,13 @@ pub unsafe extern "C" fn witslog_resolve(event_id_ptr: *const c_char) -> i32 {
 
     let writer = witslog_store::EventWriter::new(store.conn());
 
-    match writer.mark_resolved(&event_id) {
-        Ok(()) => 0,
+    // `force: false` — first resolution wins; this FFI entrypoint's ABI
+    // (no new params) is unchanged, so an already-resolved event now
+    // reports -1 rather than silently moving resolved_at, matching the
+    // CLI's `mark_resolved` fix (FR-P10-002).
+    match writer.mark_resolved(&event_id, false) {
+        Ok(true) => 0,
+        Ok(false) => -1,
         Err(_) => -1,
     }
 }

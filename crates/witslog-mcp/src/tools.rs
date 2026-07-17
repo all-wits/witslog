@@ -28,6 +28,7 @@ impl Tool {
                         "severity_min": {"type": "string"},
                         "from": {"type": "string"},
                         "to": {"type": "string"},
+                        "resolved": {"type": "boolean", "description": "true = resolved only, false = unresolved backlog"},
                         "order": {"type": "string", "enum": ["rank", "time"], "default": "rank"},
                         "limit": {"type": "integer", "default": 20, "maximum": 200},
                         "cursor": {"type": "string"}
@@ -43,6 +44,7 @@ impl Tool {
                     "properties": {
                         "application": {"type": "string"},
                         "severity_min": {"type": "string"},
+                        "resolved": {"type": "boolean", "description": "true = resolved only, false = unresolved backlog"},
                         "limit": {"type": "integer", "default": 20, "maximum": 200},
                         "cursor": {"type": "string"}
                     }
@@ -121,6 +123,7 @@ impl Tool {
                     "properties": {
                         "application": {"type": "string"},
                         "severity_min": {"type": "string"},
+                        "resolved": {"type": "boolean"},
                         "from": {"type": "string"},
                         "to": {"type": "string"}
                     }
@@ -135,6 +138,7 @@ impl Tool {
                         "application": {"type": "string"},
                         "severity_min": {"type": "string"},
                         "category": {"type": "string"},
+                        "resolved": {"type": "boolean"},
                         "from": {"type": "string"},
                         "to": {"type": "string"},
                         "bucket": {"type": "string", "enum": ["hour", "day", "week"], "default": "day"}
@@ -147,8 +151,28 @@ impl Tool {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
+                        "application": {"type": "string"},
+                        "severity_min": {"type": "string"},
+                        "category": {"type": "string"},
+                        "resolved": {"type": "boolean"},
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
                         "by": {"type": "string", "enum": ["count", "recency", "severity"], "default": "count"},
                         "limit": {"type": "integer", "default": 10, "maximum": 100}
+                    }
+                }),
+            },
+            Tool {
+                name: "mttr".to_string(),
+                description: "Fingerprint-level mean time-to-resolution: time from first sighting to first fix.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "application": {"type": "string"},
+                        "severity_min": {"type": "string"},
+                        "category": {"type": "string"},
+                        "from": {"type": "string"},
+                        "to": {"type": "string"}
                     }
                 }),
             },

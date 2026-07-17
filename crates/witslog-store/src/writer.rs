@@ -1,5 +1,6 @@
 use crate::conn::DbConnection;
 use crate::error::Result;
+use rusqlite::OptionalExtension;
 use witslog_core::Event;
 
 pub struct EventWriter<'a> {
@@ -69,16 +70,22 @@ impl<'a> EventWriter<'a> {
         }
     }
 
-    pub fn mark_resolved(&self, event_id: &str) -> Result<()> {
+    /// Marks an event resolved. Guards `resolved_at IS NULL` unless `force`,
+    /// so the first resolution wins and MTTR can't be moved by a re-resolve.
+    /// Returns `false` when no row matched (unknown id, or already resolved
+    /// without `force`).
+    pub fn mark_resolved(&self, event_id: &str, force: bool) -> Result<bool> {
         let conn = self.conn.conn();
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
-        conn.execute(
-            "UPDATE events SET resolved_at = ?1 WHERE event_id = ?2",
-            rusqlite::params![now, event_id],
-        )?;
+        let sql = if force {
+            "UPDATE events SET resolved_at = ?1 WHERE event_id = ?2"
+        } else {
+            "UPDATE events SET resolved_at = ?1 WHERE event_id = ?2 AND resolved_at IS NULL"
+        };
 
-        Ok(())
+        let rows = conn.execute(sql, rusqlite::params![now, event_id])?;
+        Ok(rows > 0)
     }
 
     /// Stream all events within an optional time range, ordered by ts ascending.
@@ -190,16 +197,56 @@ impl<'a> EventWriter<'a> {
             return Ok(ids);
         }
 
-        for id in &ids {
-            conn.execute("DELETE FROM events WHERE event_id = ?1", [id])?;
-            conn.execute(
-                "DELETE FROM error_edges WHERE src_event_id = ?1 OR dst_event_id = ?1",
-                [id],
-            )?;
-        }
+        delete_events_by_id(&conn, &ids)?;
 
         Ok(ids)
     }
+
+    /// Deletes events by id, same tombstone-then-delete path as
+    /// `delete_resolved`. Used by `prune`/`archive` so every row-removal path
+    /// in the codebase keeps the audit chain bridgeable (FR-P10-001) — see
+    /// `delete_events_by_id`.
+    pub fn delete_by_ids(&self, event_ids: &[String]) -> Result<()> {
+        let conn = self.conn.conn();
+        delete_events_by_id(&conn, event_ids)
+    }
+}
+
+/// Records a tombstone (the row's `audit_hash` at time of deletion) for each
+/// event, then deletes the row and its `error_edges`. Recording the hash
+/// before deleting lets `audit::verify_chain` bridge the id gap this leaves
+/// behind, instead of reporting every subsequent row as tampered — this is
+/// the single path all of `delete_resolved`/`prune`/`archive` must use (see
+/// PLAN.md §1's "no component reaches around the store layer" rule).
+pub(crate) fn delete_events_by_id(conn: &rusqlite::Connection, event_ids: &[String]) -> Result<()> {
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+
+    for event_id in event_ids {
+        let row: Option<(i64, Option<String>)> = conn
+            .query_row(
+                "SELECT id, audit_hash FROM events WHERE event_id = ?1",
+                [event_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+
+        let Some((row_id, audit_hash)) = row else {
+            continue;
+        };
+
+        conn.execute(
+            "INSERT OR REPLACE INTO audit_tombstones (row_id, event_id, audit_hash, deleted_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![row_id, event_id, audit_hash.unwrap_or_default(), now],
+        )?;
+
+        conn.execute("DELETE FROM events WHERE id = ?1", [row_id])?;
+        conn.execute(
+            "DELETE FROM error_edges WHERE src_event_id = ?1 OR dst_event_id = ?1",
+            [event_id],
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Hydrates an `Event` from a row produced by the canonical column list:

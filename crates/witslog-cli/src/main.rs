@@ -51,6 +51,9 @@ enum Commands {
         category: Option<String>,
         #[arg(long)]
         severity_min: Option<String>,
+        /// Only show events with `resolved_at IS NULL`.
+        #[arg(long)]
+        unresolved: bool,
         #[arg(long, default_value_t = 20)]
         limit: usize,
         #[arg(long)]
@@ -61,6 +64,10 @@ enum Commands {
         application: Option<String>,
         #[arg(long)]
         severity_min: Option<String>,
+        /// Show fingerprint-level mean time-to-resolution instead of the
+        /// normal stats summary.
+        #[arg(long)]
+        mttr: bool,
     },
     Export {
         #[arg(long)]
@@ -94,6 +101,10 @@ enum Commands {
     Migrate,
     Resolve {
         event_id: String,
+        /// Move `resolved_at` even if already resolved (default: first
+        /// resolution wins).
+        #[arg(long)]
+        force: bool,
     },
     Delete {
         #[arg(long)]
@@ -202,13 +213,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             application,
             category,
             severity_min,
+            unresolved,
             limit,
             cursor,
         } => {
-            query_search(&cli.db, &text, application, category, severity_min, limit, cursor)?;
+            query_search(
+                &cli.db, &text, application, category, severity_min, unresolved, limit, cursor,
+            )?;
         }
-        Commands::Stats { application, severity_min } => {
-            cmd_stats(&cli.db, application, severity_min)?;
+        Commands::Stats { application, severity_min, mttr } => {
+            if mttr {
+                cmd_mttr(&cli.db, application, severity_min)?;
+            } else {
+                cmd_stats(&cli.db, application, severity_min)?;
+            }
         }
         Commands::Export { output, format } => {
             cmd_export(&cli.db, output, format)?;
@@ -237,8 +255,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Migrate => {
             cmd_migrate(&cli.db)?;
         }
-        Commands::Resolve { event_id } => {
-            resolve_event(&cli.db, &event_id)?;
+        Commands::Resolve { event_id, force } => {
+            resolve_event(&cli.db, &event_id, force)?;
         }
         Commands::Delete {
             event_id,
@@ -410,6 +428,7 @@ fn query_search(
     application: Option<String>,
     category: Option<String>,
     severity_min: Option<String>,
+    unresolved: bool,
     limit: usize,
     cursor: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -426,6 +445,7 @@ fn query_search(
         application,
         category,
         severity_min,
+        resolved: if unresolved { Some(false) } else { None },
         ..Default::default()
     };
 
@@ -449,7 +469,11 @@ fn query_search(
     Ok(())
 }
 
-fn resolve_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn resolve_event(
+    db_override: &Option<PathBuf>,
+    event_id: &str,
+    force: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
     let config = Config::default_project();
@@ -457,7 +481,14 @@ fn resolve_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Bo
 
     let store = Store::open_or_create(&db_path)?;
     let writer = witslog_store::EventWriter::new(store.conn());
-    writer.mark_resolved(event_id)?;
+
+    if !writer.mark_resolved(event_id, force)? {
+        eprintln!(
+            "Error: no unresolved event matched '{}' (unknown id, or already resolved — pass --force to move resolved_at)",
+            event_id
+        );
+        std::process::exit(2);
+    }
 
     println!("✓ Event resolved");
     println!("  event_id: {}", event_id);
@@ -526,8 +557,14 @@ fn doctor(verify_audit: bool) -> Result<(), Box<dyn std::error::Error>> {
         let store = Store::open_or_create(&db_path)?;
         let conn = store.conn().conn();
         match witslog_store::audit::verify_chain(&conn)? {
-            witslog_store::AuditVerifyResult::Ok { rows_checked } => {
+            witslog_store::AuditVerifyResult::Ok { rows_checked, tombstones_bridged } => {
                 println!("  ✓ audit chain verified ({} rows, no tampering detected)", rows_checked);
+                if tombstones_bridged > 0 {
+                    println!(
+                        "    ({} row(s) previously removed by delete/prune/archive; bridged via tombstone, not tampering)",
+                        tombstones_bridged
+                    );
+                }
             }
             witslog_store::AuditVerifyResult::Broken(b) => {
                 println!(
@@ -750,6 +787,38 @@ fn cmd_stats(
     Ok(())
 }
 
+fn cmd_mttr(
+    db_override: &Option<PathBuf>,
+    application: Option<String>,
+    severity_min: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let config = Config::default_project();
+    let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
+
+    let store = Store::open_or_create(&db_path)?;
+    let conn = store.conn().conn();
+    let agg = witslog_query::AggregateEngine::new(&conn);
+
+    let filters = witslog_query::Filters {
+        application,
+        severity_min,
+        ..Default::default()
+    };
+
+    let mttr = agg.mttr(&filters)?;
+
+    println!("MTTR (fingerprint-level: first sighting to first fix)");
+    println!("  fingerprints resolved: {}", mttr.fingerprints_resolved);
+    println!("  fingerprints unresolved: {}", mttr.fingerprints_unresolved);
+    match mttr.mean_seconds {
+        Some(secs) => println!("  mean time to resolution: {:.1}s ({:.2}h)", secs, secs / 3600.0),
+        None => println!("  mean time to resolution: (no resolved fingerprints yet)"),
+    }
+
+    Ok(())
+}
+
 fn cmd_export(
     db_override: &Option<PathBuf>,
     output: Option<PathBuf>,
@@ -930,14 +999,13 @@ fn cmd_prune(
         let rows = stmt.query_map([cutoff_ms], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
+    drop(conn);
 
-    for id in &ids {
-        conn.execute("DELETE FROM events WHERE event_id = ?1", [id])?;
-        conn.execute(
-            "DELETE FROM error_edges WHERE src_event_id = ?1 OR dst_event_id = ?1",
-            [id],
-        )?;
-    }
+    // Routed through the store layer's tombstone-then-delete path (not a raw
+    // DELETE) so `doctor --verify-audit` can bridge the resulting id gap
+    // instead of reporting every later row as tampered (FR-P10-001).
+    let writer = witslog_store::EventWriter::new(store.conn());
+    writer.delete_by_ids(&ids)?;
 
     println!("✓ Pruned {} event(s) older than {}", ids.len(), older_than);
 
@@ -1011,8 +1079,18 @@ fn cmd_archive(
         [cutoff_ms],
     )?;
 
-    conn.execute("DELETE FROM events WHERE ts_epoch_ms < ?1", [cutoff_ms])?;
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT event_id FROM events WHERE ts_epoch_ms < ?1")?;
+        let rows = stmt.query_map([cutoff_ms], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
     conn.execute("DETACH DATABASE archive", [])?;
+    drop(conn);
+
+    // Same tombstone-then-delete path as `prune`/`delete` (FR-P10-001).
+    let writer = witslog_store::EventWriter::new(store.conn());
+    writer.delete_by_ids(&ids)?;
 
     println!("✓ Archived {} event(s) older than {} to {}", moved, older_than, archive_path.display());
 

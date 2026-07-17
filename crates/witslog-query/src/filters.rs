@@ -16,6 +16,9 @@ pub struct Filters {
     pub tags: Option<Vec<String>>,
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
+    /// `Some(false)` = unresolved backlog (`resolved_at IS NULL`); `Some(true)`
+    /// = resolved only; `None` = no filter on resolution state.
+    pub resolved: Option<bool>,
 }
 
 impl Filters {
@@ -94,6 +97,17 @@ impl Filters {
             params.push(Box::new(ms));
         }
 
+        if let Some(resolved) = self.resolved {
+            clauses.push(
+                (if resolved {
+                    "resolved_at IS NOT NULL"
+                } else {
+                    "resolved_at IS NULL"
+                })
+                .to_string(),
+            );
+        }
+
         if let Some(ref tag_list) = self.tags {
             // Tags as JSON array — check if json_each finds any match.
             // For simplicity: OR together tag conditions.
@@ -163,5 +177,26 @@ mod tests {
         let (where_clause, params) = f.to_sql();
         assert!(where_clause.contains("severity_rank >= ?"));
         assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn test_filters_to_sql_resolved_false_is_unresolved_backlog() {
+        let f = Filters {
+            resolved: Some(false),
+            ..Default::default()
+        };
+        let (where_clause, params) = f.to_sql();
+        assert!(where_clause.contains("resolved_at IS NULL"));
+        assert_eq!(params.len(), 0);
+    }
+
+    #[test]
+    fn test_filters_to_sql_resolved_true() {
+        let f = Filters {
+            resolved: Some(true),
+            ..Default::default()
+        };
+        let (where_clause, _params) = f.to_sql();
+        assert!(where_clause.contains("resolved_at IS NOT NULL"));
     }
 }

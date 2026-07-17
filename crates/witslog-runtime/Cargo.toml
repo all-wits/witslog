@@ -9,6 +9,7 @@ license.workspace = true
 witslog-core = { path = "../witslog-core" }
 witslog-store = { path = "../witslog-store" }
 witslog-config = { path = "../witslog-config" }
+witslog-plugin = { path = "../witslog-plugin" }
 serde_json.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }

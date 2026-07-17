@@ -30,6 +30,8 @@ use witslog_core::{
 };
 use witslog_store::{EventWriter, Store, StoreSink};
 
+mod notify;
+
 #[cfg(feature = "tracing")]
 mod tracing_layer;
 #[cfg(feature = "tracing")]
@@ -48,6 +50,10 @@ pub enum RuntimeError {
     Store(#[from] witslog_store::StoreError),
 }
 
+/// `(registry, min_severity_rank)` — `None` when `[notify]` is disabled or
+/// has no `path` configured.
+type NotifyState = Option<(Arc<witslog_plugin::PluginRegistry>, i32)>;
+
 /// The resolved, mount-once state. Redactor/classifier/enrich config are built
 /// a single time here rather than per-callsite.
 struct Runtime {
@@ -57,6 +63,7 @@ struct Runtime {
     auto_classify: bool,
     buffer_cfg: BufferConfig,
     db_path: PathBuf,
+    notify: NotifyState,
 }
 
 /// Cheap, clonable view of the runtime taken under the lock, so the actual
@@ -69,6 +76,7 @@ struct Snapshot {
     auto_classify: bool,
     buffer_cfg: BufferConfig,
     db_path: PathBuf,
+    notify: NotifyState,
 }
 
 static RUNTIME: OnceLock<RwLock<Runtime>> = OnceLock::new();
@@ -84,6 +92,7 @@ fn snapshot() -> Option<Snapshot> {
         auto_classify: rt.auto_classify,
         buffer_cfg: rt.buffer_cfg.clone(),
         db_path: rt.db_path.clone(),
+        notify: rt.notify.clone(),
     })
 }
 
@@ -165,6 +174,7 @@ fn build_runtime(config: &Config, db_path: PathBuf) -> Runtime {
         auto_classify: config.taxonomy.auto_classify_enabled,
         buffer_cfg: buffer_cfg_from(config),
         db_path,
+        notify: build_notify_registry(config),
     }
 }
 
@@ -210,13 +220,23 @@ fn write_via_snapshot(snap: &Snapshot, builder: EventBuilder, force_sync: bool) 
     };
     let event = apply_pipeline(builder, &snap.enrich, &snap.redactor, classifier);
 
-    if snap.buffer_cfg.enabled && !force_sync {
-        return enqueue_buffered(&snap.db_path, &snap.buffer_cfg, event);
+    let result = if snap.buffer_cfg.enabled && !force_sync {
+        enqueue_buffered(&snap.db_path, &snap.buffer_cfg, event.clone())
+    } else {
+        let store = Store::open_or_create(&snap.db_path).ok()?;
+        let writer = EventWriter::new(store.conn());
+        writer.write(&event).ok()
+    };
+
+    // Hard rule: never dispatch from the panic-hook's forced-sync path — a
+    // panic may precede process abort, and a notifier (even a "fast" one)
+    // doing I/O inside a panic handler is the one place a stall is
+    // unacceptable. `force_sync` is exactly that path (see `capture_sync`).
+    if result.is_some() && !force_sync {
+        dispatch_notify(&snap.notify, &event);
     }
 
-    let store = Store::open_or_create(&snap.db_path).ok()?;
-    let writer = EventWriter::new(store.conn());
-    writer.write(&event).ok()
+    result
 }
 
 fn enqueue_buffered(db_path: &Path, cfg: &BufferConfig, event: Event) -> Option<i64> {
@@ -280,6 +300,8 @@ pub fn build_and_write(
         writer.write(&event)?;
     }
 
+    dispatch_notify(&build_notify_registry(config), &event);
+
     Ok(event)
 }
 
@@ -314,6 +336,56 @@ fn buffer_cfg_from(config: &Config) -> BufferConfig {
         batch_size: config.buffer.batch_size,
         flush_interval_ms: config.buffer.flush_interval_ms,
         queue_capacity: config.buffer.queue_capacity,
+    }
+}
+
+/// Builds the notifier `PluginRegistry` from `[notify]`. `None` when disabled
+/// or no `path` is configured (the only builtin notifier is file-based).
+fn build_notify_registry(config: &Config) -> NotifyState {
+    if !config.notify.enabled {
+        return None;
+    }
+    let path = config.notify.path.clone()?;
+
+    let mut registry = witslog_plugin::PluginRegistry::new();
+    let file_notifier: Arc<dyn witslog_plugin::Notifier> = Arc::new(notify::FileNotifier::new(path));
+    let notifier: Arc<dyn witslog_plugin::Notifier> = match config.notify.once_per_fingerprint_secs {
+        Some(secs) if secs > 0 => Arc::new(notify::ThrottledNotifier::new(
+            file_notifier,
+            std::time::Duration::from_secs(secs),
+        )),
+        _ => file_notifier,
+    };
+    registry.register_notifier(notifier);
+
+    Some((Arc::new(registry), severity_rank(&config.notify.min_severity)))
+}
+
+/// Dispatches to the notifier registry if configured and the event meets
+/// `min_severity`. Failures (including plugin panics) are already isolated
+/// and swallowed by `PluginRegistry::dispatch_event` — never fails the write.
+fn dispatch_notify(notify: &NotifyState, event: &Event) {
+    let Some((registry, min_rank)) = notify else {
+        return;
+    };
+    if event.severity.rank() < *min_rank {
+        return;
+    }
+    if let Ok(json) = serde_json::to_value(event) {
+        let _ = registry.dispatch_event(&json);
+    }
+}
+
+fn severity_rank(s: &str) -> i32 {
+    match s {
+        "trace" => 10,
+        "debug" => 20,
+        "info" => 30,
+        "warn" => 40,
+        "error" => 50,
+        "critical" => 60,
+        "fatal" => 70,
+        _ => 50,
     }
 }
 

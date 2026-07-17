@@ -72,6 +72,7 @@ impl<'a> ToolRegistry<'a> {
             "list_categories" => self.list_categories(params),
             "timeline" => self.timeline(params),
             "top_failures" => self.top_failures(params),
+            "mttr" => self.mttr(params),
             "list_traces" => self.list_traces(params),
             "search_all" => self.search_all(params),
             "witslog_delete" => self.witslog_delete(params),
@@ -89,6 +90,7 @@ impl<'a> ToolRegistry<'a> {
         let severity_min = str_field(params, "severity_min");
         let from = str_field(params, "from").and_then(|s| parse_time(&s));
         let to = str_field(params, "to").and_then(|s| parse_time(&s));
+        let resolved = params.get("resolved").and_then(|v| v.as_bool());
 
         Filters {
             application,
@@ -96,6 +98,7 @@ impl<'a> ToolRegistry<'a> {
             severity_min,
             from,
             to,
+            resolved,
             ..Default::default()
         }
     }
@@ -330,7 +333,10 @@ impl<'a> ToolRegistry<'a> {
         let by = str_field(&params, "by").unwrap_or_else(|| "count".to_string());
         let limit = limit_field(&params, "limit", 10, 100);
 
-        let filters = Filters::default();
+        // Regression lock (top_failures_honours_caller_filters): this used to
+        // hardcode Filters::default(), silently ignoring every filter param
+        // the caller passed (application/category/resolved/from/to).
+        let filters = self.common_filters(&params);
         let conn = self.conn();
         let agg = AggregateEngine::new(&conn);
         let results = agg
@@ -348,6 +354,27 @@ impl<'a> ToolRegistry<'a> {
                     "sample_event_id": f.sample_event_id
                 })
             }).collect::<Vec<_>>()
+        }))
+    }
+
+    /// Read-only. Fingerprint-level, not event-level (see `AggregateEngine::mttr`
+    /// doc comment) — no MCP write tool for resolution exists (PLAN.md §5
+    /// deliberately made `witslog_delete` the only write tool; a resolve tool
+    /// would let an agent silently qualify rows for `witslog_delete`'s
+    /// `resolved_at IS NOT NULL` default filter).
+    fn mttr(&self, params: Value) -> Result<Value> {
+        let filters = self.common_filters(&params);
+
+        let conn = self.conn();
+        let agg = AggregateEngine::new(&conn);
+        let mttr = agg
+            .mttr(&filters)
+            .map_err(|e| McpError::QueryError(e.to_string()))?;
+
+        Ok(json!({
+            "fingerprints_resolved": mttr.fingerprints_resolved,
+            "fingerprints_unresolved": mttr.fingerprints_unresolved,
+            "mean_seconds": mttr.mean_seconds
         }))
     }
 

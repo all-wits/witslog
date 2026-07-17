@@ -115,6 +115,34 @@ and the equivalent regression test in each SDK's unit test suite (`test_init_for
 enrichment (`pid`, `cwd`, `git_commit`, `hostname`) is unaffected and can be disabled independently
 the same way.
 
+## Browser-side error capture (P10) — ingest recipe for Python/PHP
+
+`bindings/browser/witslog-browser.js` ships client-side JS errors to a server-side ingest
+endpoint via `navigator.sendBeacon`/`fetch`. A Node adapter ships
+(`witslogBrowserIngest` in `bindings/node/frameworks/express.js`); Python/PHP adapters are
+**not** shipped — three parallel handlers accepting untrusted input is three attack
+surfaces to keep in sync for a feature whose whole risk lives in that handling. The
+guardrails below are not optional extras; skipping any of them turns the endpoint into
+an unauthenticated write into the AI's evidence base (this text ends up in
+`events.message`, which `search_errors`/`explain_error` return verbatim to an
+MCP-connected LLM). Port the Node handler's logic (see its source for the full rationale):
+
+1. **Origin allowlist, fail-closed.** Reject unless the `Origin` header is in an explicit
+   list you provide — default to none. This is the actual defense; the request
+   genuinely originates from `127.0.0.1` (the attack is a malicious page open in the same
+   browser as your dev server), so a loopback check alone does not stop it.
+2. **Refuse to arm in production** unless explicitly forced by the caller.
+3. **Rate-limit by client** — per-request size caps don't bound request *volume*.
+4. **Clamp severity to `error`/`warn`** (never let untrusted input claim
+   `fatal`/`critical`) and cap message/stacktrace/batch/body sizes.
+5. Map each accepted event through your SDK's normal `log`/`exception` call with
+   `tags: ["browser"]` — advisory only, not a trust boundary; `classify()` merges
+   suggested tags into whatever is already there.
+
+True provenance (an `ingest_source` field trusted by the query layer) isn't in the
+payload contract above and would need a `WITSLOG_ABI_VERSION` bump — out of scope until
+a real need shows up.
+
 ## Mount / flush lifecycle
 
 `tracing` (the Rust ambient capture) does **not** cross the ABI. Each SDK:

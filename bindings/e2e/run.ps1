@@ -14,6 +14,12 @@
              that `argv` is absent from the persisted context while other
              enrichment (pid) remains - proving the documented mitigation
              (CONTRACT.md "Security note") actually holds end-to-end.
+    Gate 4 - browser ingest e2e (P10): posts a browser-shaped batch through
+             `witslogBrowserIngest` (bindings/node/frameworks/express.js)
+             backed by the REAL native FFI (not a fake lib), then reads the
+             message back through the real CLI - proving client-side text
+             actually crosses ingest -> FFI -> DB -> CLI, not just the
+             mocked-lib unit tests.
 
     Usage:  pwsh bindings/e2e/run.ps1 [-SkipBuild] [-SkipWorkspaceTests]
     Exit code 0 = everything passed.
@@ -179,9 +185,41 @@ Invoke-ArgvOffSmoke -Name 'php' -Marker $phpArgvMarker -Run {
     php -d extension=ffi -d ffi.enable=1 (Join-Path $e2e 'php_smoke.php') $phpArgvMarker 'argv-off'
 }
 
+# --- Gate 4: browser ingest e2e (real FFI, not a fake lib) ------------------
+Section 'browser ingest e2e'
+$browserMarker = 'BR' + (Get-Random -Maximum 999999)
+$proj = Join-Path $env:TEMP ("wits_browser_{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Force -Path $proj | Out-Null
+$browserOk = $false
+try {
+    Push-Location $proj
+    & $cli init . | Out-Null
+    $env:WITSLOG_LIB = $dll
+    $env:WITSLOG_PKG = Join-Path $root 'bindings\node\index.js'
+    node (Join-Path $e2e 'browser_ingest_smoke.js') $browserMarker
+    if ($LASTEXITCODE -ne 0) { throw "browser ingest smoke exited $LASTEXITCODE" }
+
+    $readback = & $cli query "$browserMarker*" 2>&1 | Out-String
+    Pop-Location
+
+    if ($readback -notmatch [regex]::Escape($browserMarker)) {
+        throw "browser ingest: CLI did not read back the posted marker.`n$readback"
+    }
+    Write-Host "browser ingest OK - POST body round-tripped through real FFI + CLI" -ForegroundColor Green
+    $browserOk = $true
+}
+catch {
+    if ((Get-Location).Path -eq $proj) { Pop-Location }
+    Write-Host "browser ingest FAILED: $_" -ForegroundColor Red
+}
+finally {
+    Remove-Item -Recurse -Force $proj -ErrorAction SilentlyContinue
+}
+$results['browser-ingest'] = $browserOk
+
 Section 'summary'
 $allOk = $true
-$order = @('workspace-tests', 'python', 'node', 'php', 'python-argv-off', 'node-argv-off', 'php-argv-off')
+$order = @('workspace-tests', 'python', 'node', 'php', 'python-argv-off', 'node-argv-off', 'php-argv-off', 'browser-ingest')
 foreach ($k in $order) {
     if (-not $results.ContainsKey($k)) { continue }
     $status = if ($results[$k]) { 'PASS' } else { 'FAIL' }

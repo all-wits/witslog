@@ -89,3 +89,67 @@ fn panic_is_captured_as_fatal() {
     assert!(message.contains("kaboom"));
     assert_eq!(one_column(&db, "error_code"), "panic");
 }
+
+/// P10c regression lock: the panic hook forces a synchronous write because
+/// the process may abort before a background flush — a notifier doing I/O in
+/// that path is the one place a stall is unacceptable. Even with `[notify]`
+/// enabled at a min_severity that would match a Fatal panic event, the
+/// notify file must stay untouched.
+#[test]
+fn notifier_never_dispatches_from_panic_path() {
+    let _g = LOCK.lock().unwrap();
+    let (_dir, mut cfg, _db) = temp_config();
+    let notify_dir = tempfile::tempdir().unwrap();
+    let notify_path = notify_dir.path().join("notify.ndjson");
+    cfg.notify.enabled = true;
+    cfg.notify.path = Some(notify_path.clone());
+    cfg.notify.min_severity = "trace".to_string();
+    witslog_runtime::arm(cfg);
+
+    let outcome = std::panic::catch_unwind(|| panic!("should not notify"));
+    assert!(outcome.is_err());
+
+    assert!(
+        !notify_path.exists(),
+        "notifier must never fire from the panic-hook's forced-sync path"
+    );
+}
+
+/// P10c: a normal (non-panic) capture with `[notify]` enabled does dispatch —
+/// confirms the file notifier is actually wired into the write path, not
+/// just never firing.
+#[test]
+fn notifier_dispatches_on_normal_capture() {
+    let _g = LOCK.lock().unwrap();
+    let (_dir, mut cfg, _db) = temp_config();
+    let notify_dir = tempfile::tempdir().unwrap();
+    let notify_path = notify_dir.path().join("notify.ndjson");
+    cfg.notify.enabled = true;
+    cfg.notify.path = Some(notify_path.clone());
+    cfg.notify.min_severity = "error".to_string();
+    witslog_runtime::arm(cfg);
+
+    let row_id = witslog_runtime::capture(error("app", "boom")).expect("captured");
+    assert!(row_id > 0);
+
+    let content = std::fs::read_to_string(&notify_path).unwrap();
+    assert!(content.contains("boom"));
+}
+
+/// P10c regression lock: a notifier that can't write (path is a directory)
+/// must not fail the event write — `PluginRegistry::dispatch_event` isolates
+/// notifier failures, and the runtime must never propagate them.
+#[test]
+fn notifier_failure_does_not_fail_write() {
+    let _g = LOCK.lock().unwrap();
+    let (_dir, mut cfg, db) = temp_config();
+    let unwritable_dir = tempfile::tempdir().unwrap();
+    cfg.notify.enabled = true;
+    cfg.notify.path = Some(unwritable_dir.path().to_path_buf()); // a directory, not a file
+    cfg.notify.min_severity = "error".to_string();
+    witslog_runtime::arm(cfg);
+
+    let row_id = witslog_runtime::capture(error("app", "boom"));
+    assert!(row_id.is_some(), "notifier failure must not fail the write");
+    assert_eq!(count_events(&db), 1);
+}
