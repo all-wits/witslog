@@ -11,8 +11,13 @@ name: Release Node SDK (cross-platform native lib)
 # queues far longer than macos-14 (Apple Silicon) and was dropped; Intel Mac
 # users will hit WitslogLibraryError until that's revisited.
 #
-# Trigger: manual only (workflow_dispatch). Requires the NPM_TOKEN repo
-# secret (npmjs.com -> Access Tokens -> Automation token, scoped to publish).
+# Trigger: manual only (workflow_dispatch). Publishes via npm Trusted
+# Publishing (OIDC) - no NPM_TOKEN secret needed or used. Requires the
+# npmjs.com package's Trusted Publisher config (Publisher: GitHub Actions,
+# org: all-wits, repo: witslog, workflow filename: release-node-sdk.yml,
+# environment: <blank, this job doesn't declare one>) and `id-token: write`
+# below, which is what lets GitHub mint the OIDC token npm exchanges for a
+# short-lived publish credential.
 on:
   workflow_dispatch:
     inputs:
@@ -71,6 +76,9 @@ jobs:
   assemble-and-publish:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for npm Trusted Publishing (OIDC)
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +86,11 @@ jobs:
         with:
           node-version: "latest"
           registry-url: "https://registry.npmjs.org"
+
+      # Trusted Publishing requires npm CLI >= 11.5.1; pin to latest so an
+      # older bundled npm doesn't silently fall back to token auth.
+      - name: Ensure npm supports Trusted Publishing (OIDC)
+        run: npm install -g npm@latest
 
       - name: Download all platform artifacts into bindings/node/_libs/
         uses: actions/download-artifact@v4
@@ -116,5 +129,3 @@ jobs:
         if: ${{ inputs.publish && steps.version_check.outputs.changed == 'true' }}
         working-directory: bindings/node
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
