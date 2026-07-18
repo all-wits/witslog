@@ -81,6 +81,14 @@ Homebrew, Scoop, or a release binary), or the bundled binary isn't available for
 point `WITSLOG_CLI=/path/to/witslog` at it — the npm-bundled and separately-installed CLIs are
 interchangeable, pick whichever is already in your toolchain.
 
+> **⚠️ For MCP (AI-assistant integration), install the CLI globally instead of relying on the
+> npm-bundled binary** — see the [root README's MCP section](../../README.md#-integration-with-ai-mcp)
+> for why: macOS Intel has no npm-bundled CLI at all (only [curl/irm](../../docs/install.md)/
+> Homebrew/Scoop/`cargo install` cover it), and an MCP config generated from a path inside this
+> project's `node_modules/` breaks if `node_modules` is ever removed or reinstalled elsewhere. The
+> npm-bundled `npx witslog <command>` is for ad-hoc/manual use from inside a project — a globally
+> installed CLI is what `serve-mcp --print-mcp-config` should point an MCP client at.
+
 > **🔒 Security:** `argv` enrichment defaults on and captures the full command line. If your
 > app may receive secrets as bare CLI args, call `witslog.init({ enrich: { argv: false } })` —
 > see [../CONTRACT.md](../CONTRACT.md#security-note-argv-enrichment-vs-secrets).

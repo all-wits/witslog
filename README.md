@@ -216,6 +216,17 @@ witslog serve-mcp --print-mcp-config
 }
 ```
 
+> **⚠️ Use the globally-installed CLI ([curl/irm](#install), Homebrew, Scoop, or
+> `cargo install`) to generate this — not the Node SDK's npm-bundled binary.** Two reasons:
+> 1. **macOS Intel has no npm-bundled CLI at all.** `release-node-sdk.yml` (npm's binary
+>    source) dropped `macos-13`/Intel — see [Known limitations](CHANGELOG.md#known-limitations).
+>    `release.yml` (the curl/irm/cargo binary source) builds it. On Intel Mac, a globally
+>    installed CLI is the *only* way to get `serve-mcp`.
+> 2. The generated `command` is an absolute path (`std::env::current_exe()`) — if it comes from
+>    inside a project's `node_modules/@all-wits/witslog/_bin/`, the MCP config breaks the moment
+>    that project's `node_modules` is removed or reinstalled elsewhere. A globally-installed CLI's
+>    path is stable independent of any one project.
+
 ## 🏷️ Taxonomy
 
 **Builtin categories** (infrastructure/application/runtime/external):
