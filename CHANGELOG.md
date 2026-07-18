@@ -7,6 +7,8 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-07-18
+
 ### Added
 
 - **Node SDK (`@all-wits/witslog`) now bundles the real `witslog` CLI binary**, closing the
