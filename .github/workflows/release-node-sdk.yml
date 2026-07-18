@@ -1,11 +1,13 @@
 name: Release Node SDK (cross-platform native lib)
 
-# Builds witslog_ffi natively on 4 hosted-runner OS/arch combos (no
-# cross-compilation - avoids the rusqlite bundled-C cross-toolchain problem),
-# assembles them into bindings/node/_libs/<platform>/, then publishes
-# @all-wits/witslog to npm. The same artifacts are reusable by the Python
-# and PHP bindings' _libs/<platform>/ layout (identical locator convention -
-# see bindings/CONTRACT.md), even though this workflow only wires up Node.
+# Builds witslog_ffi + the witslog CLI natively on 4 hosted-runner OS/arch
+# combos (no cross-compilation - avoids the rusqlite bundled-C cross-toolchain
+# problem), assembles them into bindings/node/_libs/<platform>/ and
+# bindings/node/_bin/<platform>/, then publishes @all-wits/witslog to npm.
+# The _libs/<platform>/ artifacts are reusable by the Python and PHP bindings'
+# identical locator convention (see bindings/CONTRACT.md); _bin/<platform>/
+# (the CLI binary) is Node-only so far - `witslog query`/`stats`/etc. have no
+# FFI surface, only the CLI/MCP expose them (see CONTRACT.md + CLAUDE.md).
 #
 # darwin-x64 (Intel Mac) is NOT built here - the macos-13 hosted runner pool
 # queues far longer than macos-14 (Apple Silicon) and was dropped; Intel Mac
@@ -37,14 +39,20 @@ jobs:
             platform_dir: win32-x64
             lib_name: witslog_ffi.dll
             artifact_path: target/release/witslog_ffi.dll
+            cli_name: witslog.exe
+            cli_artifact_path: target/release/witslog.exe
           - os: ubuntu-latest
             platform_dir: linux-x64
             lib_name: libwitslog_ffi.so
             artifact_path: target/release/libwitslog_ffi.so
+            cli_name: witslog
+            cli_artifact_path: target/release/witslog
           - os: ubuntu-24.04-arm
             platform_dir: linux-arm64
             lib_name: libwitslog_ffi.so
             artifact_path: target/release/libwitslog_ffi.so
+            cli_name: witslog
+            cli_artifact_path: target/release/witslog
           # macos-13 (Intel) dropped: GitHub-hosted runner pool for it queues
           # for a very long time (far worse than macos-14/Apple Silicon).
           # darwin-x64 users are unsupported until an Intel Mac runner/self-hosted
@@ -53,6 +61,8 @@ jobs:
             platform_dir: darwin-arm64
             lib_name: libwitslog_ffi.dylib
             artifact_path: target/release/libwitslog_ffi.dylib
+            cli_name: witslog
+            cli_artifact_path: target/release/witslog
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -60,17 +70,25 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: cargo build --release -p witslog-ffi
-        run: cargo build --release -p witslog-ffi
+      - name: cargo build --release -p witslog-ffi -p witslog-cli
+        run: cargo build --release -p witslog-ffi -p witslog-cli
 
-      - name: Verify the expected artifact exists
+      - name: Verify the expected artifacts exist
         shell: bash
-        run: test -f "${{ matrix.artifact_path }}"
+        run: |
+          test -f "${{ matrix.artifact_path }}"
+          test -f "${{ matrix.cli_artifact_path }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform_dir }}
           path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform_dir }}-cli
+          path: ${{ matrix.cli_artifact_path }}
           if-no-files-found: error
 
   assemble-and-publish:
@@ -99,9 +117,29 @@ jobs:
 
       # actions/download-artifact@v4 lays each artifact out as
       # _libs/<platform_dir>/<lib_name> already - matches the SDK locator
-      # convention (bindings/CONTRACT.md) with zero rearranging needed.
-      - name: List assembled _libs
-        run: find bindings/node/_libs -type f
+      # convention (bindings/CONTRACT.md) with zero rearranging needed. The
+      # `-cli` artifacts land alongside as _libs/<platform_dir>-cli/<cli_name>;
+      # move those into _bin/<platform_dir>/ (the CLI locator convention,
+      # bindings/node/lib/cli-locator.js) and set the exec bit - artifact
+      # upload/download does not reliably preserve it on non-Windows.
+      - name: Move CLI binaries into bindings/node/_bin/
+        shell: bash
+        run: |
+          set -e
+          mkdir -p bindings/node/_bin
+          for d in bindings/node/_libs/*-cli; do
+            [ -d "$d" ] || continue
+            platform=$(basename "$d" -cli)
+            mkdir -p "bindings/node/_bin/$platform"
+            mv "$d"/* "bindings/node/_bin/$platform/"
+            rmdir "$d"
+          done
+          find bindings/node/_bin -type f -not -name '*.exe' -exec chmod +x {} \;
+
+      - name: List assembled _libs / _bin
+        run: |
+          find bindings/node/_libs -type f
+          find bindings/node/_bin -type f
 
       - name: npm pack --dry-run (always, for the workflow log)
         working-directory: bindings/node

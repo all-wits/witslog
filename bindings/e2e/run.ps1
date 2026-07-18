@@ -20,6 +20,12 @@
              message back through the real CLI - proving client-side text
              actually crosses ingest -> FFI -> DB -> CLI, not just the
              mocked-lib unit tests.
+    Gate 5 - npm CLI shim e2e: runs `bin/witslog.js query` (the npm-bundled
+             CLI shim, bindings/node/lib/cli-locator.js) with WITSLOG_CLI
+             pointed at the real freshly-built witslog(.exe), against the
+             project already populated by the node SDK smoke gate - proves
+             shim -> real binary -> real DB works end-to-end, not just the
+             fake-spawn unit/feature tests.
 
     Usage:  pwsh bindings/e2e/run.ps1 [-SkipBuild] [-SkipWorkspaceTests]
     Exit code 0 = everything passed.
@@ -217,9 +223,48 @@ finally {
 }
 $results['browser-ingest'] = $browserOk
 
+# --- Gate 5: npm CLI shim e2e (bin/witslog.js -> real binary -> real DB) ----
+Section 'npm CLI shim e2e'
+$shimBin = Join-Path $root 'bindings\node\bin\witslog.js'
+$cliMarker = 'SHIM' + (Get-Random -Maximum 999999)
+$proj = Join-Path $env:TEMP ("wits_shim_{0}" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Force -Path $proj | Out-Null
+$shimOk = $false
+try {
+    Push-Location $proj
+    & $cli init . | Out-Null
+    $env:WITSLOG_LIB = $dll
+    $env:WITSLOG_PKG = Join-Path $root 'bindings\node\index.js'
+    node (Join-Path $e2e 'node_smoke.js') $cliMarker 'argv-on'
+    if ($LASTEXITCODE -ne 0) { throw "shim setup (node_smoke) exited $LASTEXITCODE" }
+
+    # The shim itself is what's under test here, not $cli directly - it must
+    # resolve WITSLOG_CLI and forward argv/stdio/exit code to the real binary.
+    $env:WITSLOG_CLI = $cli
+    $shimOut = node $shimBin query "$cliMarker*" 2>&1 | Out-String
+    $shimExit = $LASTEXITCODE
+    Pop-Location
+
+    if ($shimExit -ne 0) { throw "bin/witslog.js query exited $shimExit`n$shimOut" }
+    if ($shimOut -notmatch [regex]::Escape($cliMarker)) {
+        throw "npm CLI shim: query did not read back the marker via bin/witslog.js.`n$shimOut"
+    }
+    Write-Host "npm CLI shim OK - bin/witslog.js -> real binary -> real DB round-tripped" -ForegroundColor Green
+    $shimOk = $true
+}
+catch {
+    if ((Get-Location).Path -eq $proj) { Pop-Location }
+    Write-Host "npm CLI shim FAILED: $_" -ForegroundColor Red
+}
+finally {
+    Remove-Item Env:\WITSLOG_CLI -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $proj -ErrorAction SilentlyContinue
+}
+$results['npm-cli-shim'] = $shimOk
+
 Section 'summary'
 $allOk = $true
-$order = @('workspace-tests', 'python', 'node', 'php', 'python-argv-off', 'node-argv-off', 'php-argv-off', 'browser-ingest')
+$order = @('workspace-tests', 'python', 'node', 'php', 'python-argv-off', 'node-argv-off', 'php-argv-off', 'browser-ingest', 'npm-cli-shim')
 foreach ($k in $order) {
     if (-not $results.ContainsKey($k)) { continue }
     $status = if ($results[$k]) { 'PASS' } else { 'FAIL' }

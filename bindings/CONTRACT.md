@@ -103,6 +103,23 @@ Resolved in order:
 
 On failure the SDK raises `WitslogLibraryError` listing the paths it tried.
 
+## CLI binary location (Node SDK only, `bindings/node/lib/cli-locator.js`)
+
+Same convention as the native lib locator above, parallel `_bin/` tree instead of `_libs/`.
+Resolved in order:
+
+1. `WITSLOG_CLI` environment variable — explicit path to the `witslog` binary (used in dev/CI;
+   point it at `target/release/witslog(.exe)`).
+2. Package-bundled `_bin/<platform>/witslog{,.exe}`, same `<platform>` values as `_libs/`
+   (`win32-x64`, `linux-x64`, `linux-arm64`, `darwin-arm64`).
+3. The OS `PATH` (bare `witslog`/`witslog.exe`) — a separately-installed CLI still works.
+
+`npx witslog <command>` / a global install both invoke `bin/witslog.js`, a thin `spawnSync`
+shim that forwards argv/stdio/exit code to whichever binary the locator resolves. On a
+spawn-time `ENOENT` (nothing resolved) it reports `WitslogCliNotFoundError` listing the paths
+tried. Python/PHP don't have this — no bundled CLI binary for those SDKs; use a separately
+installed `witslog` (see `docs/install.md`) for `query`/`stats`/etc. there.
+
 ## DB resolution
 
 The native library resolves the target DB by walking up from the current working directory for a

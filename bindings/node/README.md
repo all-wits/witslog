@@ -14,8 +14,10 @@
 ---
 
 Thin wrapper over the native `witslog-ffi` C ABI via [`koffi`](https://koffi.dev) — one
-dependency, **prebuilt, no native build step**. See [../CONTRACT.md](../CONTRACT.md) for the
-full SDK↔native ABI.
+dependency, **prebuilt, no native build step**. As of 0.4.0 it also bundles the real `witslog`
+CLI binary per platform, so `witslog query`/`stats`/`export`/`serve-mcp`/`doctor` etc. (the
+read/ops surface that has no FFI equivalent — see CONTRACT.md) work straight after install, no
+separate CLI install required. See [../CONTRACT.md](../CONTRACT.md) for the full SDK↔native ABI.
 
 ## 📦 Install
 
@@ -31,9 +33,10 @@ pnpm add @all-wits/witslog
 bun add @all-wits/witslog
 ```
 
-Native libraries for Windows x64, Linux x64/arm64, and macOS (Apple Silicon) are bundled —
-`npm install` / `pnpm add` / `bun add` alone is enough on those platforms. See
-[Platform support](#-platform-support) below for the current gap.
+Native libraries **and** the `witslog` CLI binary for Windows x64, Linux x64/arm64, and macOS
+(Apple Silicon) are bundled — `npm install` / `pnpm add` / `bun add` alone is enough on those
+platforms, for both the SDK and `npx witslog <command>` / a global-install `witslog` on your
+PATH. See [Platform support](#-platform-support) below for the current gap.
 
 ## 🚀 Quick Start
 
@@ -52,10 +55,31 @@ try {
 
 `init()` needs a `.witslog/` project directory to write into — pass `createProject: true`
 (scaffolds one at `process.cwd()`) or `createProject: '/path/to/project'` the first time you
-mount in a fresh project; it's a no-op on later runs once `.witslog/` already exists. This
-means `npm install` alone is enough — no separate CLI install required to get started. (If you
-already have the [`witslog` CLI](../../docs/install.md) installed, `witslog init` still works
-and does the same thing.)
+mount in a fresh project; it's a no-op on later runs once `.witslog/` already exists.
+
+**As of 0.4.0, `npm install @all-wits/witslog` also gives you the real `witslog` CLI** — on the
+4 bundled platforms (see [Platform support](#-platform-support)), a plain `npm install` wires up
+`npx witslog <command>` (and a global install puts `witslog` on your PATH) with the same binary
+[`docs/install.md`](../../docs/install.md) or Homebrew/Scoop/`cargo install` would give you —
+`witslog init`, `witslog query`, `witslog stats`, `witslog serve-mcp`, all of it:
+
+```bash
+npx witslog init .
+npx witslog query "db timeout*"
+```
+
+For programmatic use `createProject: true` remains the way to scaffold `.witslog/` from code
+without shelling out:
+
+```js
+const witslog = require('@all-wits/witslog');
+witslog.init({ createProject: true }); // scaffolds .witslog/, cross-platform
+```
+
+If you *also* separately install the [`witslog` CLI](../../docs/install.md) (`cargo install`,
+Homebrew, Scoop, or a release binary), or the bundled binary isn't available for your platform,
+point `WITSLOG_CLI=/path/to/witslog` at it — the npm-bundled and separately-installed CLIs are
+interchangeable, pick whichever is already in your toolchain.
 
 > **🔒 Security:** `argv` enrichment defaults on and captures the full command line. If your
 > app may receive secrets as bare CLI args, call `witslog.init({ enrich: { argv: false } })` —
@@ -131,7 +155,8 @@ in **any Node.js process**, which covers the server side of most modern framewor
 | macOS arm64 (Apple Silicon) | ✅ |
 | macOS x64 (Intel) | ⬜ not yet built by CI — [see CHANGELOG](../../CHANGELOG.md#known-limitations) |
 
-If your platform isn't bundled, point at a local build via `WITSLOG_LIB=/path/to/witslog_ffi.*`.
+If your platform isn't bundled, point at a local build via `WITSLOG_LIB=/path/to/witslog_ffi.*`
+(native lib) and `WITSLOG_CLI=/path/to/witslog[.exe]` (CLI binary).
 
 ## 🧪 Test
 

@@ -7,6 +7,27 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Added
+
+- **Node SDK (`@all-wits/witslog`) now bundles the real `witslog` CLI binary**, closing the
+  remaining npm-install-only gap: `createProject: true` (previous session) fixed `init`, but
+  `query`/`stats`/`export`/`serve-mcp`/`doctor` have no FFI surface at all (by design — see
+  `bindings/CONTRACT.md`), so they were unreachable without a separate CLI install. `bin/
+  witslog.js` (new) is a thin `spawnSync` shim resolving the binary via `bindings/node/lib/
+  cli-locator.js` — `WITSLOG_CLI` env override → bundled `_bin/<platform>/witslog{,.exe}` →
+  bare `witslog` on `PATH` (mirrors the existing `_libs/`/`WITSLOG_LIB` native-lib locator
+  convention exactly). Wired into `package.json`'s `bin` field, so `npx witslog query ...` and
+  a global install both work post-`npm install`, on the 4 already-bundled platforms (Windows
+  x64, Linux x64/arm64, macOS Apple Silicon — `darwin-x64` stays unbundled, same known gap as
+  the native lib). `.github/workflows/release-node-sdk.yml` extended to also
+  `cargo build --release -p witslog-cli` per matrix leg and assemble into `_bin/`.
+  `bindings/e2e/run.ps1` gained Gate 5 (npm CLI shim e2e, real binary via `WITSLOG_CLI`, real
+  DB, real query readback through `bin/witslog.js` itself, not just `$cli` directly). Node SDK
+  bumped to 0.4.0. Regression lock: `bindings/node/test/cli_locator.test.js` (`resolveCliPath()`
+  falls through to the bare filename when nothing bundled exists, `package.json.bin.witslog`
+  wiring itself), `bindings/node/test/bin_shim.test.js` (argv/exit-code forwarding,
+  `WitslogCliNotFoundError` on spawn-time `ENOENT`).
+
 ### Fixed
 
 - **Node SDK (`@all-wits/witslog`) had no way to bootstrap a `.witslog/` project**:
