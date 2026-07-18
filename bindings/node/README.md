@@ -17,7 +17,8 @@ Thin wrapper over the native `witslog-ffi` C ABI via [`koffi`](https://koffi.dev
 dependency, **prebuilt, no native build step**. As of 0.4.0 it also bundles the real `witslog`
 CLI binary per platform, so `witslog query`/`stats`/`export`/`serve-mcp`/`doctor` etc. (the
 read/ops surface that has no FFI equivalent — see CONTRACT.md) work straight after install, no
-separate CLI install required. See [../CONTRACT.md](../CONTRACT.md) for the full SDK↔native ABI.
+separate CLI install required. See [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md)
+for the full SDK↔native ABI.
 
 ## 📦 Install
 
@@ -91,7 +92,7 @@ interchangeable, pick whichever is already in your toolchain.
 
 > **🔒 Security:** `argv` enrichment defaults on and captures the full command line. If your
 > app may receive secrets as bare CLI args, call `witslog.init({ enrich: { argv: false } })` —
-> see [../CONTRACT.md](../CONTRACT.md#security-note-argv-enrichment-vs-secrets).
+> see [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md#security-note-argv-enrichment-vs-secrets).
 
 ## 🧩 Express
 
@@ -121,8 +122,8 @@ app.use(witslogBrowserIngest({
 > allowlist by default, refuses to run under `NODE_ENV=production` unless `{ force: true }`,
 > rate-limited per client, and severity clamped to `error`/`warn` (never `fatal`/`critical`).
 > `tags: ['browser']` is advisory only, not a trust boundary. See
-> [`../CONTRACT.md`](../CONTRACT.md) for the Python/PHP ingest recipe and the full guardrail
-> rationale.
+> [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md) for the
+> Python/PHP ingest recipe and the full guardrail rationale.
 
 ## 🧱 Works with your Node.js stack
 
@@ -147,7 +148,7 @@ in **any Node.js process**, which covers the server side of most modern framewor
 
 | Function | Description |
 |----------|--------------|
-| `init(config?)` | Mount the SDK; pass `{ createProject: true }` to scaffold `.witslog/` first, plus optional enrich/redact/buffer config (see [CONTRACT.md](../CONTRACT.md)). |
+| `init(config?)` | Mount the SDK; pass `{ createProject: true }` to scaffold `.witslog/` first, plus optional enrich/redact/buffer config (see [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md)). |
 | `error/warn/info(app, message, opts?)` | Log at the given severity. `opts`: `context`, `tags`, `metadata`, `error_code`, `exception`, `stacktrace`, `correlation_id`, `parent_event_id`, `category`, `version`, `environment`. |
 | `log(app, message, opts?)` | Same as `error`, explicit severity via `opts.severity`. |
 | `exception(app, err, opts?)` | Log a caught `Error`, capturing `err.stack`. |
