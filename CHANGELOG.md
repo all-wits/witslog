@@ -7,6 +7,34 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Install scripts only printed a PATH suggestion instead of acting on it**: after
+  `install/install.ps1` copied `witslog.exe`, it just echoed the
+  `[Environment]::SetEnvironmentVariable(...)` command for the user to run manually — same
+  gap in `install/install.sh` (a `note: add ... to your PATH` echo, no actual PATH change).
+  Confirmed live via a real `v0.1.3` install (`irm .../install.ps1 | iex`): binary landed at
+  `%LOCALAPPDATA%\witslog\bin\witslog.exe`, version check at the end of the script only worked
+  because that script invokes the binary by full path, not `witslog` on PATH — a fresh
+  `witslog` in a new terminal would 'command not found' until the user manually ran the
+  printed suggestion. Fixed both scripts to act, not suggest: `install.ps1` now calls
+  `[Environment]::SetEnvironmentVariable('Path', ..., 'User')` (persists across terminals) plus
+  updates `$env:Path` for the current session; `install.sh` detects the user's shell (`$SHELL`
+  → `.zshrc`/`.bashrc`/`.profile`) and appends an idempotent `export PATH=...` line (skips if
+  the install dir is already present, so re-running the installer doesn't duplicate it), plus
+  exports it for the current (piped-into-`sh`) session. `docs/install.md` updated to describe
+  the new automatic behavior.
+  - Follow-up fixes found reviewing cross-platform coverage of the above: (1) `install.sh`'s
+    shell detection only branched `zsh`/`bash`, silently writing a bash-style `export PATH=...`
+    line into `~/.profile` for fish users — fish never reads `.profile` and doesn't understand
+    `export` syntax anyway, so fish users got no PATH fix at all. Added a `*/fish` branch
+    writing `set -gx PATH ... $PATH` to `~/.config/fish/config.fish` instead (creating the
+    `~/.config/fish/` dir if missing). (2) `install.ps1`'s arch switch mapped `ARM64` to an
+    asset (`witslog-windows-aarch64.zip`) that `release.yml`'s Windows matrix never builds
+    (only `x86_64-pc-windows-msvc`) — Windows-on-ARM users hit a raw 404 instead of the same
+    clean "no prebuilt binary, use cargo install" error every other unsupported arch gets.
+    Windows ARM64 now falls through to that same unsupported-arch path.
+
 ## [0.1.3] — 2026-07-18
 
 ### Added

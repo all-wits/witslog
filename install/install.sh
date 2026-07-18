@@ -66,9 +66,46 @@ mkdir -p "$INSTALL_DIR"
 install -m 755 "$TMP_DIR/witslog" "$INSTALL_DIR/witslog"
 
 echo "✓ witslog installed to $INSTALL_DIR/witslog"
+
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
-  *) echo "note: add $INSTALL_DIR to your PATH to use 'witslog' directly." ;;
+  *)
+    # Pick the rc file the user's interactive shell actually reads. $SHELL is
+    # the login shell, not necessarily $0 here (this script is piped into `sh`).
+    # fish uses its own config file/syntax - `export PATH=...` is meaningless
+    # there and .bashrc/.zshrc/.profile are never sourced by it.
+    case "${SHELL:-}" in
+      */fish)
+        RC_FILE="$HOME/.config/fish/config.fish"
+        LINE="set -gx PATH \"$INSTALL_DIR\" \$PATH"
+        ;;
+      */zsh)
+        RC_FILE="$HOME/.zshrc"
+        LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+        ;;
+      */bash)
+        RC_FILE="$HOME/.bashrc"
+        LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+        ;;
+      *)
+        RC_FILE="$HOME/.profile"
+        LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+        ;;
+    esac
+    if [ -f "$RC_FILE" ] && grep -qF "$INSTALL_DIR" "$RC_FILE" 2>/dev/null; then
+      : # already added on a previous install run
+    else
+      mkdir -p "$(dirname "$RC_FILE")"
+      echo "" >> "$RC_FILE"
+      echo "# added by witslog installer" >> "$RC_FILE"
+      echo "$LINE" >> "$RC_FILE"
+      echo "✓ added $INSTALL_DIR to PATH in $RC_FILE"
+    fi
+    # Update the current (piped-into-sh) session too, so the --version check
+    # below works; a NEW interactive shell picks it up from $RC_FILE.
+    export PATH="$INSTALL_DIR:$PATH"
+    echo "note: restart your terminal (or run 'source $RC_FILE') for 'witslog' to work in new shells."
+    ;;
 esac
 
 "$INSTALL_DIR/witslog" --version

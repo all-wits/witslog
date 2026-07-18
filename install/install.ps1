@@ -14,7 +14,9 @@ $InstallDir = if ($env:WITSLOG_INSTALL_DIR) { $env:WITSLOG_INSTALL_DIR } else { 
 $ArchRaw = $env:PROCESSOR_ARCHITECTURE
 $Arch = switch ($ArchRaw) {
   "AMD64" { "x86_64" }
-  "ARM64" { "aarch64" }
+  # Windows on ARM has no prebuilt release asset yet (release.yml only builds
+  # x86_64-pc-windows-msvc) - fall through to "unsupported" like any other
+  # arch we don't ship, rather than attempting a download that 404s.
   default { "unsupported" }
 }
 
@@ -58,8 +60,12 @@ try {
 
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   if ($userPath -notlike "*$InstallDir*") {
-    Write-Host "note: add $InstallDir to your PATH to use 'witslog' directly."
-    Write-Host "      [Environment]::SetEnvironmentVariable('Path', `"`$env:Path;$InstallDir`", 'User')"
+    $newUserPath = if ([string]::IsNullOrEmpty($userPath)) { $InstallDir } else { "$userPath;$InstallDir" }
+    [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+    # Update the current session too, so `witslog` works immediately without
+    # reopening the terminal (the User env var change above only affects new processes).
+    $env:Path = "$env:Path;$InstallDir"
+    Write-Host "✓ added $InstallDir to your User PATH (new terminals pick it up automatically)"
   }
 
   & (Join-Path $InstallDir "witslog.exe") --version

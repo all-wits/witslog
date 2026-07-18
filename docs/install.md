@@ -16,8 +16,15 @@ irm https://raw.githubusercontent.com/all-wits/witslog/main/install/install.ps1 
 
 Both scripts detect OS/arch, download the matching release asset from GitHub
 Releases, verify its SHA-256 checksum, and place `witslog` on PATH
-(`~/.local/bin` on Linux/macOS, `%LOCALAPPDATA%\witslog\bin` on Windows).
-Override with `WITSLOG_VERSION` / `WITSLOG_INSTALL_DIR` env vars.
+(`~/.local/bin` on Linux/macOS, `%LOCALAPPDATA%\witslog\bin` on Windows) —
+**automatically**, not just as a printed suggestion: Windows updates the User
+`Path` env var (persists across terminals) plus the current session; Linux/
+macOS appends an `export PATH=...` line to the detected shell rc file
+(`.zshrc`/`.bashrc`/`.profile`, whichever `$SHELL` points at) plus the current
+session, so the version check at the end of the script always succeeds. New
+terminals pick it up automatically; re-running the installer is idempotent
+(won't duplicate the PATH entry). Override with `WITSLOG_VERSION` /
+`WITSLOG_INSTALL_DIR` env vars.
 
 ## Package managers
 
