@@ -271,7 +271,7 @@ cargo test --workspace
 
 # Test an SDK
 py -m pytest bindings/python/tests          # Python
-npm test --prefix bindings/node             # Node
+pnpm --dir bindings/node test                # Node
 composer test --working-dir=bindings/php    # PHP
 
 # Cross-language regression driver

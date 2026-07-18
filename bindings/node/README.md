@@ -169,7 +169,7 @@ If your platform isn't bundled, point at a local build via `WITSLOG_LIB=/path/to
 ## 🧪 Test
 
 ```bash
-npm install && npm test
+pnpm install && pnpm test
 ```
 
 ## 📄 License

@@ -74,6 +74,7 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 - **Update `CHANGELOG.md` in the same change that lands the feature/fix** — not as an afterthought at release time. Add entries under `## [Unreleased]`, grouped by `### Added` / `### Changed` / `### Fixed` / `### Removed` (Keep a Changelog format, already in use here).
 - Write entries for a future reader who wasn't in this session: name the phase/FR-ID, the files/commands touched, and *why* if it isn't obvious (mirrors the style already in `[0.1.0]`).
 - On an actual version cut, move `[Unreleased]` content under a new dated `## [x.y.z] — YYYY-MM-DD` heading rather than deleting history.
+- **Node-SDK-specific changes also need a `bindings/node/CHANGELOG.md` entry** (added this session — npm doesn't surface the root project-wide file to package consumers). It's a curated extract, versioned against `bindings/node/package.json`'s own number, not the root file's `v*.*.*`/`node-sdk *` headings — keep both in sync when a change is Node-SDK-specific. Listed in `package.json`'s `files` array so it ships in the published tarball.
 
 ### Error Handling
 
