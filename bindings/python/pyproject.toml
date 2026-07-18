@@ -13,6 +13,11 @@ authors = [{ name = "witslog team" }]
 keywords = ["logging", "errors", "sqlite", "observability"]
 # Core has NO third-party runtime dependencies (ctypes is stdlib).
 
+[project.urls]
+Homepage = "https://github.com/all-wits/witslog"
+Changelog = "https://github.com/all-wits/witslog/blob/main/bindings/python/CHANGELOG.md"
+Contract = "https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md"
+
 [project.optional-dependencies]
 fastapi = ["fastapi", "starlette"]
 flask = ["flask"]

@@ -3,11 +3,11 @@
 # 🪵 witslog (Node.js SDK)
 
 [![npm](https://img.shields.io/npm/v/%40all-wits%2Fwitslog?label=npm&logo=npm)](https://www.npmjs.com/package/@all-wits/witslog)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../../LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/all-wits/witslog/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/%40all-wits%2Fwitslog?logo=nodedotjs)](https://www.npmjs.com/package/@all-wits/witslog)
 [![CI](https://img.shields.io/github/actions/workflow/status/all-wits/witslog/release-node-sdk.yml?logo=githubactions)](https://github.com/all-wits/witslog/actions/workflows/release-node-sdk.yml)
 
-**Framework-agnostic Node.js SDK for [witslog](../../README.md) structured error logging.**
+**Framework-agnostic Node.js SDK for [witslog](https://github.com/all-wits/witslog/blob/main/README.md) structured error logging.**
 
 </div>
 
@@ -18,7 +18,8 @@ dependency, **prebuilt, no native build step**. As of 0.4.0 it also bundles the 
 CLI binary per platform, so `witslog query`/`stats`/`export`/`serve-mcp`/`doctor` etc. (the
 read/ops surface that has no FFI equivalent — see CONTRACT.md) work straight after install, no
 separate CLI install required. See [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md)
-for the full SDK↔native ABI.
+for the full SDK↔native ABI, and [CHANGELOG.md](https://github.com/all-wits/witslog/blob/main/bindings/node/CHANGELOG.md)
+for this package's release history.
 
 ## 📦 Install
 
@@ -61,7 +62,7 @@ mount in a fresh project; it's a no-op on later runs once `.witslog/` already ex
 **As of 0.4.0, `npm install @all-wits/witslog` also gives you the real `witslog` CLI** — on the
 4 bundled platforms (see [Platform support](#-platform-support)), a plain `npm install` wires up
 `npx witslog <command>` (and a global install puts `witslog` on your PATH) with the same binary
-[`docs/install.md`](../../docs/install.md) or Homebrew/Scoop/`cargo install` would give you —
+[`docs/install.md`](https://github.com/all-wits/witslog/blob/main/docs/install.md) or Homebrew/Scoop/`cargo install` would give you —
 `witslog init`, `witslog query`, `witslog stats`, `witslog serve-mcp`, all of it:
 
 ```bash
@@ -77,14 +78,14 @@ const witslog = require('@all-wits/witslog');
 witslog.init({ createProject: true }); // scaffolds .witslog/, cross-platform
 ```
 
-If you *also* separately install the [`witslog` CLI](../../docs/install.md) (`cargo install`,
+If you *also* separately install the [`witslog` CLI](https://github.com/all-wits/witslog/blob/main/docs/install.md) (`cargo install`,
 Homebrew, Scoop, or a release binary), or the bundled binary isn't available for your platform,
 point `WITSLOG_CLI=/path/to/witslog` at it — the npm-bundled and separately-installed CLIs are
 interchangeable, pick whichever is already in your toolchain.
 
 > **⚠️ For MCP (AI-assistant integration), install the CLI globally instead of relying on the
-> npm-bundled binary** — see the [root README's MCP section](../../README.md#-integration-with-ai-mcp)
-> for why: macOS Intel has no npm-bundled CLI at all (only [curl/irm](../../docs/install.md)/
+> npm-bundled binary** — see the [root README's MCP section](https://github.com/all-wits/witslog/blob/main/README.md#-integration-with-ai-mcp)
+> for why: macOS Intel has no npm-bundled CLI at all (only [curl/irm](https://github.com/all-wits/witslog/blob/main/docs/install.md)/
 > Homebrew/Scoop/`cargo install` cover it), and an MCP config generated from a path inside this
 > project's `node_modules/` breaks if `node_modules` is ever removed or reinstalled elsewhere. The
 > npm-bundled `npx witslog <command>` is for ad-hoc/manual use from inside a project — a globally
@@ -105,7 +106,7 @@ app.use(witslogErrorHandler('myapp'));   // last, after routes
 
 ### 🌐 Browser-side error capture
 
-Pairs with [`bindings/browser/witslog-browser.js`](../browser) — a zero-dep client reporter
+Pairs with [`bindings/browser/witslog-browser.js`](https://github.com/all-wits/witslog/tree/main/bindings/browser) — a zero-dep client reporter
 that batches `window.onerror` / unhandled-rejection events and ships them via
 `navigator.sendBeacon` to this ingest endpoint.
 
@@ -162,7 +163,7 @@ in **any Node.js process**, which covers the server side of most modern framewor
 | Linux x64 | ✅ |
 | Linux arm64 | ✅ |
 | macOS arm64 (Apple Silicon) | ✅ |
-| macOS x64 (Intel) | ⬜ not yet built by CI — [see CHANGELOG](../../CHANGELOG.md#known-limitations) |
+| macOS x64 (Intel) | ⬜ not yet built by CI — [see CHANGELOG](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md#known-limitations) |
 
 If your platform isn't bundled, point at a local build via `WITSLOG_LIB=/path/to/witslog_ffi.*`
 (native lib) and `WITSLOG_CLI=/path/to/witslog[.exe]` (CLI binary).
@@ -175,4 +176,4 @@ pnpm install && pnpm test
 
 ## 📄 License
 
-Apache License 2.0 — see [../../LICENSE](../../LICENSE).
+Apache License 2.0 — see [LICENSE](https://github.com/all-wits/witslog/blob/main/LICENSE).
