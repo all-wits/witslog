@@ -1,8 +1,4 @@
-# witslog — Project Guide for Claude
-
-## Tool preference
-
-**Use `codegraph_*` tools (codegraph_search, codegraph_explore, codegraph_callers, codegraph_callees, codegraph_impact, codegraph_node, codegraph_files) over raw `Grep`/`Read` for code exploration in this repo.** Codegraph is a prebuilt indexed knowledge graph — `codegraph_explore` alone usually answers "how does X work" / "where is X" with verbatim source, no grep+read loop needed. Fall back to `Grep`/`Read` only to confirm one specific detail codegraph didn't cover.
+# witslog — Project Guide for Codex
 
 witslog = SQLite-backed error intelligence framework. Per-project DB (`./.witslog/witslog.db`), structured events, AI-queryable via future MCP. See **PLAN.md** for full spec.
 

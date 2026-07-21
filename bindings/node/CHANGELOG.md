@@ -6,6 +6,21 @@ their own independent version numbers. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package versions independently of
 the Rust workspace (pre-1.0).
 
+## [0.4.1] — 2026-07-21
+
+### Fixed
+
+- **Undocumented Next.js bundling break**: `witslog.init()` inside a Next.js Route
+  Handler/Server Action threw `Cannot find the native Koffi module; did you bundle it
+  correctly?` — Next bundles server route code by default, and `koffi`'s own native `.node`
+  module resolution (internal to the `koffi` dependency, not this package's own `_libs/`
+  locator) is bundler-incompatible. Fix is config, not code: add
+  `serverExternalPackages: ["@all-wits/witslog", "koffi"]` to `next.config.ts` — see the new
+  Next.js subsection in [README.md](README.md#-works-with-your-nodejs-stack) and
+  [bindings/CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md).
+  Regression lock: `test/bundler_koffi.test.js` (webpack bundle of `require('koffi')`, with
+  and without externalizing `koffi`).
+
 ## [0.4.0] — 2026-07-18
 
 ### Added

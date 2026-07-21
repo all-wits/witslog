@@ -1,6 +1,6 @@
 {
   "name": "@all-wits/witslog",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Framework-agnostic Node.js SDK for witslog structured error logging",
   "license": "Apache-2.0",
   "author": "witslog team",
@@ -38,5 +38,8 @@
   ],
   "dependencies": {
     "koffi": "^2.9.0"
+  },
+  "devDependencies": {
+    "webpack": "^5.94.0"
   }
 }

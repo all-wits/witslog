@@ -9,6 +9,20 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ### Fixed
 
+- **Node SDK (`@all-wits/witslog`) undocumented under Next.js bundling**: `witslog.init()` in a
+  Next.js Route Handler/Server Action threw `Cannot find the native Koffi module; did you bundle
+  it correctly?` because Next bundles server route code by default (webpack/turbopack), and
+  koffi's own native `.node` module resolution (internal to the `koffi` dependency, separate from
+  witslog's own `_libs/` locator) is bundler-incompatible. No witslog code change can make a
+  native addon bundler-safe — the fix is the same one any native-addon npm package needs under
+  Next.js: `serverExternalPackages: ["@all-wits/witslog", "koffi"]` in `next.config.ts`. Documented
+  in `bindings/node/README.md` (new Next.js subsection), root `README.md`, and
+  `bindings/CONTRACT.md` (Native library location section). Node SDK bumped to 0.4.1 (docs-only,
+  same reasoning as `node-sdk 0.2.1`). Regression lock:
+  `bindings/node/test/bundler_koffi.test.js` — bundles a `require('koffi')` fixture with webpack
+  both without and with `koffi` externalized, pinning that the unexternalized case fails and the
+  externalized case (mirroring `serverExternalPackages`) succeeds.
+
 - **Install scripts only printed a PATH suggestion instead of acting on it**: after
   `install/install.ps1` copied `witslog.exe`, it just echoed the
   `[Environment]::SetEnvironmentVariable(...)` command for the user to run manually — same

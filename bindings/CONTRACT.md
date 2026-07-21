@@ -103,6 +103,17 @@ Resolved in order:
 
 On failure the SDK raises `WitslogLibraryError` listing the paths it tried.
 
+**Bundler note (Node SDK only):** the locator above is witslog's own logic and works fine under a
+bundler. But `koffi` (the Node SDK's FFI dependency) does its own native `.node` module resolution
+internally, via static per-platform `require(...)` calls in its own loader — those are
+bundler-incompatible by nature. A consumer using webpack/turbopack/esbuild/Vite SSR to bundle
+server-side code (Next.js Route Handlers being the common case) must externalize both packages so
+they're `require()`d natively instead of bundled, e.g. in Next.js:
+`serverExternalPackages: ["@all-wits/witslog", "koffi"]`. Without it, `koffi`'s loader throws
+`"Cannot find the native Koffi module; did you bundle it correctly?"` at load time — this is a
+`koffi`-internal failure, not a witslog `_libs/` locator failure, and no witslog code change can
+fix it. See [bindings/node/README.md](node/README.md#-works-with-your-nodejs-stack).
+
 ## CLI binary location (Node SDK only, `bindings/node/lib/cli-locator.js`)
 
 Same convention as the native lib locator above, parallel `_bin/` tree instead of `_libs/`.

@@ -31,6 +31,9 @@ bindings/python/**/*.egg-info/
 # or copied locally for dev; not source, never committed.
 bindings/*/_libs/
 
+# Node SDK — webpack-fixture scratch dirs from test/bundler_koffi.test.js
+bindings/node/.tmp/
+
 # OS
 Thumbs.db
 .DS_Store

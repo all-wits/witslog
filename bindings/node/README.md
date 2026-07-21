@@ -132,7 +132,22 @@ app.use(witslogBrowserIngest({
 in **any Node.js process**, which covers the server side of most modern frameworks:
 
 - **Next.js** — call it from Route Handlers / API Routes, Server Actions, or Server
-  Components (`witslog.init()` once at module scope, `witslog.error(...)` in a `catch`).
+  Components (`witslog.init()` once at module scope, `witslog.error(...)` in a `catch`). **Next.js
+  bundles server route code by default (webpack/turbopack), and that breaks resolution of
+  `koffi`'s native `.node` addon** — you'll hit:
+  ```
+  Error: Cannot find the native Koffi module; did you bundle it correctly?
+  ```
+  Fix: tell Next to `require()` both packages natively instead of bundling them, in
+  `next.config.ts`:
+  ```ts
+  const nextConfig: NextConfig = {
+    serverExternalPackages: ["@all-wits/witslog", "koffi"],
+  };
+  ```
+  (Next.js ≥15; pre-15 use `experimental.serverComponentsExternalPackages` instead.) This is the
+  same fix any native-addon npm package needs under Next.js (e.g. Prisma, Sharp) — no witslog code
+  change can make a `.node` binary bundler-safe, so this config is required, not optional.
 - **Nuxt.js** — same idea inside server routes / the Nitro server (`server/api/*.ts`,
   `server/plugins/*.ts`).
 - **Vite** — use it in a Vite **SSR** entry (`vite-node`, `vite-plugin-ssr`, a custom

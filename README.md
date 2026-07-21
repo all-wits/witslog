@@ -111,6 +111,10 @@ needed just to bootstrap a project. See [bindings/node](bindings/node),
 [bindings/python](bindings/python), and [bindings/php](bindings/php) for the Python/PHP
 equivalents (which still need the CLI's `witslog init` for now — see each README).
 
+> **⚠️ Using Next.js?** Its default bundling breaks the Node SDK's native `koffi` addon
+> resolution — see the [Next.js section of the Node SDK README](bindings/node/README.md#-works-with-your-nodejs-stack)
+> for the required `serverExternalPackages` config.
+
 ### Browser-side error capture
 
 Client-rendered JS errors (`window.onerror`, unhandled promise rejections) join the same DB
