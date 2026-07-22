@@ -179,7 +179,10 @@ you want per-route timing/correlation without global instrumentation.
 aren't interchangeable, so this is a separate export, not a re-export — same guardrails):
 
 ```ts
-// app/api/__witslog/route.ts
+// app/api/witslog-ingest/route.ts — do NOT start the folder name with `_`;
+// Next.js's App Router treats any path segment starting with `_` as a
+// private folder excluded from routing, so app/api/__witslog/route.ts
+// would silently never register a route (every POST 404s).
 import { witslogNextIngest } from '@all-wits/witslog/frameworks/next';
 export const POST = witslogNextIngest({ allowedOrigins: ['https://your-app.example'] });
 ```

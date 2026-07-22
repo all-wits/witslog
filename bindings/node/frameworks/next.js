@@ -125,7 +125,11 @@ function withWitslog(handler, opts = {}) {
  * Express's req/res. Express's raw req/res and Next's Request/Response are
  * NOT interchangeable, so this is a real second entry point, not a re-export.
  *
- *   // app/api/__witslog/route.ts
+ *   // app/api/witslog-ingest/route.ts  -- do NOT name the folder `__witslog`
+ *   // or anything starting with `_`: Next.js's App Router treats any path
+ *   // segment starting with `_` as a private folder, excluded from routing
+ *   // entirely. app/api/__witslog/route.ts silently never registers a
+ *   // route at all (every POST 404s) -- this bit a real adopter.
  *   import { witslogNextIngest } from '@all-wits/witslog/frameworks/next';
  *   const handler = witslogNextIngest({ allowedOrigins: ['http://localhost:3000'] });
  *   export { handler as POST };

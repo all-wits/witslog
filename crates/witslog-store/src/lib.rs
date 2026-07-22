@@ -11,7 +11,7 @@ pub use conn::DbConnection;
 pub use error::{Result, StoreError};
 pub use migrate::{Migrator, CURRENT_SCHEMA_VERSION};
 pub use sink::StoreSink;
-pub use writer::{DeleteFilter, EventWriter};
+pub use writer::{hydrate_event_row, DeleteFilter, EventWriter};
 
 use std::path::{Path, PathBuf};
 

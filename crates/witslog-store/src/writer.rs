@@ -254,7 +254,19 @@ pub(crate) fn delete_events_by_id(conn: &rusqlite::Connection, event_ids: &[Stri
 /// hostname, severity, category, error_code, message, exception,
 /// stacktrace, stack_norm, root_cause, fingerprint, correlation_id,
 /// parent_event_id, context, tags, metadata, resolved_at
-pub(crate) fn hydrate_event_row(row: &rusqlite::Row) -> rusqlite::Result<Event> {
+/// Public: shared by `witslog-query::SearchEngine` too, so both read paths
+/// hydrate from the SAME explicit column list below — `SELECT e.*` order
+/// depends on physical column layout (CREATE-TABLE order, then each
+/// `ALTER TABLE ADD COLUMN` appended at the END, e.g. `resolved_at` via
+/// `migrate_0002_resolved_at`), which doesn't match a hand-written index
+/// comment once a column is added later. A prior version of
+/// `witslog-query::search::hydrate_event` hardcoded its own indices assuming
+/// `resolved_at` sat right after `parent_event_id` (matching this function's
+/// column order) while actually running `SELECT e.*` (physical order, with
+/// `resolved_at` appended at the very end) — context and tags silently read
+/// each other's data as a result. Always pair this function with a SELECT
+/// using this exact explicit column list, never `SELECT e.*` / `SELECT *`.
+pub fn hydrate_event_row(row: &rusqlite::Row) -> rusqlite::Result<Event> {
     let ts_str: String = row.get(2)?;
     let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
         .ok()

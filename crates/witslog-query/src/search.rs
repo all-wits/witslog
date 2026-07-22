@@ -108,35 +108,49 @@ impl<'a> SearchEngine<'a> {
             String::new()
         };
 
+        // Explicit column list, NOT `e.*` — `e.*` reflects physical column
+        // order (CREATE TABLE order, then each `ALTER TABLE ADD COLUMN`
+        // appended at the END, e.g. `resolved_at`), which drifts from any
+        // hand-maintained index assumption the moment a column is added
+        // later. This exact list matches `witslog_store::hydrate_event_row`
+        // (see its doc comment) — the same helper `EventWriter::query_by_id`
+        // uses, so both read paths hydrate identically. A prior version of
+        // this file used `SELECT e.*` with its own hardcoded/drifted index
+        // comment, which silently swapped `context`/`tags`/`metadata` once
+        // `resolved_at` (migration 0002) was appended after them physically
+        // instead of where the comment assumed.
+        const EVENT_COLUMNS: &str = "e.id, e.event_id, e.ts, e.application, e.version, e.environment, \
+             e.command, e.subsystem, e.hostname, e.severity, e.category, e.error_code, e.message, \
+             e.exception, e.stacktrace, e.stack_norm, e.root_cause, e.fingerprint, e.correlation_id, \
+             e.parent_event_id, e.context, e.tags, e.metadata, e.resolved_at";
+
         let sql = if match_all {
-            // No FTS join, no rank — `e.*` gives the exact column order
-            // `hydrate_event` expects, same as the FTS branch below.
             format!(
-                "SELECT e.* FROM events e
+                "SELECT {} FROM events e
                  WHERE {} {}
                  ORDER BY e.ts_epoch_ms DESC
                  LIMIT ?",
-                filter_where, cursor_clause
+                EVENT_COLUMNS, filter_where, cursor_clause
             )
         } else if order_by_rank {
             format!(
-                "SELECT e.*, bm25(events_fts, 3.0, 2.0, 1.0, 2.0, 2.0, 1.0) AS rank
+                "SELECT {}, bm25(events_fts, 3.0, 2.0, 1.0, 2.0, 2.0, 1.0) AS rank
                  FROM events_fts
                  JOIN events e ON e.id = events_fts.rowid
                  WHERE events_fts MATCH ? AND {} {}
                  ORDER BY rank
                  LIMIT ?",
-                filter_where, cursor_clause
+                EVENT_COLUMNS, filter_where, cursor_clause
             )
         } else {
             format!(
-                "SELECT e.*, bm25(events_fts, 3.0, 2.0, 1.0, 2.0, 2.0, 1.0) AS rank
+                "SELECT {}, bm25(events_fts, 3.0, 2.0, 1.0, 2.0, 2.0, 1.0) AS rank
                  FROM events_fts
                  JOIN events e ON e.id = events_fts.rowid
                  WHERE events_fts MATCH ? AND {} {}
                  ORDER BY e.ts_epoch_ms DESC
                  LIMIT ?",
-                filter_where, cursor_clause
+                EVENT_COLUMNS, filter_where, cursor_clause
             )
         };
 
@@ -153,7 +167,7 @@ impl<'a> SearchEngine<'a> {
         all_params.push(&limit_param);
 
         let rows = stmt.query_map(all_params.as_slice(), |row| {
-            self.hydrate_event(row)
+            witslog_store::hydrate_event_row(row)
         })?;
 
         let mut items = Vec::new();
@@ -203,73 +217,6 @@ impl<'a> SearchEngine<'a> {
         })
     }
 
-    /// Hydrate an Event from a query result row.
-    /// SELECT e.* from events gives columns in this order:
-    /// id(0), event_id(1), ts(2), ts_epoch_ms(3), application(4), version(5),
-    /// environment(6), command(7), subsystem(8), hostname(9), severity(10), severity_rank(11),
-    /// category(12), error_code(13), message(14), exception(15), stacktrace(16), stack_norm(17),
-    /// root_cause(18), fingerprint(19), correlation_id(20), parent_event_id(21), resolved_at(22),
-    /// context(23), tags(24), metadata(25), ...generated columns, ingest_source, schema_v
-    fn hydrate_event(&self, row: &rusqlite::Row) -> rusqlite::Result<Event> {
-        let ts_str: String = row.get(2)?;
-        let ts = chrono::DateTime::parse_from_rfc3339(&ts_str)
-            .ok()
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|| chrono::Utc::now());
-
-        let context = row.get::<_, Option<String>>(23)?
-            .and_then(|j| serde_json::from_str(&j).ok());
-        let tags = row.get::<_, Option<String>>(24)?
-            .and_then(|j| serde_json::from_str(&j).ok());
-        let metadata = row.get::<_, Option<String>>(25)?
-            .and_then(|j| serde_json::from_str(&j).ok());
-
-        let severity_str: String = row.get(10)?;
-        let severity = match severity_str.as_str() {
-            "trace" => witslog_core::Severity::Trace,
-            "debug" => witslog_core::Severity::Debug,
-            "info" => witslog_core::Severity::Info,
-            "warn" => witslog_core::Severity::Warn,
-            "error" => witslog_core::Severity::Error,
-            "critical" => witslog_core::Severity::Critical,
-            "fatal" => witslog_core::Severity::Fatal,
-            _ => witslog_core::Severity::Error,
-        };
-
-        let resolved_at = row.get::<_, Option<String>>(22)?
-            .and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(&s)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-            });
-
-        Ok(Event {
-            id: row.get(0)?,
-            event_id: row.get(1)?,
-            timestamp: ts,
-            application: row.get(4)?,
-            version: row.get(5)?,
-            environment: row.get(6)?,
-            command: row.get(7)?,
-            subsystem: row.get(8)?,
-            hostname: row.get(9)?,
-            severity,
-            category: row.get(12)?,
-            error_code: row.get(13)?,
-            message: row.get(14)?,
-            exception: row.get(15)?,
-            stacktrace: row.get(16)?,
-            stack_norm: row.get(17)?,
-            root_cause: row.get(18)?,
-            fingerprint: row.get(19)?,
-            correlation_id: row.get(20)?,
-            parent_event_id: row.get(21)?,
-            resolved_at,
-            context,
-            tags,
-            metadata,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -376,5 +323,46 @@ mod tests {
 
         let result = engine.search("(unclosed", &Filters::default(), 20, None, true);
         assert!(result.is_err());
+    }
+
+    /// Regression lock: `search()` used to `SELECT e.*` and hydrate via
+    /// hand-written column indices assuming `resolved_at` sat right after
+    /// `parent_event_id` — but `resolved_at` is added by a later `ALTER
+    /// TABLE ADD COLUMN` (migrate_0002_resolved_at), which SQLite always
+    /// appends at the physical END of the column list, not wherever a
+    /// comment assumes. `e.*`'s real order therefore has `resolved_at`
+    /// AFTER `context`/`tags`/`metadata`/the generated `ctx_*` columns, one
+    /// full column later than the old code assumed — silently reading
+    /// `tags`'s data into `context`, `metadata`'s into `tags`, and a
+    /// generated `ctx_request_id` column into `metadata`. Distinct,
+    /// unambiguous context/tags values here would have failed loudly on the
+    /// old code (context held the tags array; tags read back null).
+    #[test]
+    fn search_hydrates_context_and_tags_without_swapping_them() {
+        let conn = fresh_conn();
+        conn.execute(
+            "INSERT INTO events (event_id, ts, ts_epoch_ms, application, severity, severity_rank,
+                                  message, fingerprint, schema_v, context, tags, resolved_at)
+             VALUES ('evt-1', '2026-01-01T00:00:00.000Z', 0, 'app', 'error', 50,
+                     'boom', 'fp-1', 1, '{\"mutationKey\":[\"cards\",\"update\"]}', '[\"browser\",\"react-query\"]', NULL)",
+            [],
+        )
+        .unwrap();
+
+        let engine = SearchEngine::new(&conn);
+        let result = engine.search("*", &Filters::default(), 20, None, true).unwrap();
+
+        assert_eq!(result.items.len(), 1);
+        let event = &result.items[0];
+
+        let tags = event.tags.as_ref().expect("tags should be Some, not swapped into null");
+        assert_eq!(tags, &vec!["browser".to_string(), "react-query".to_string()]);
+
+        let context = event.context.as_ref().expect("context should be Some");
+        assert_eq!(
+            context.get("mutationKey").and_then(|v| v.as_array()).map(|a| a.len()),
+            Some(2),
+            "context should hold the mutationKey object, not the tags array: {context:?}"
+        );
     }
 }
