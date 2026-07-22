@@ -168,8 +168,26 @@ import { attachWitslog } from '@all-wits/witslog/frameworks/react-query';
 attachWitslog(queryClient, { report: myBrowserReporter });
 ```
 
+```js
+// client.ts (axios) — mints/propagates a correlation id, stamps it + latency
+// onto the rejected error so a React Query failure and the proxy log for the
+// same request share one correlation_id
+import { witslogAxiosInterceptor } from '@all-wits/witslog/frameworks/axios';
+witslogAxiosInterceptor(apiClient, { report: myBrowserReporter });
+```
+
+```js
+// useBoardDoc.ts-style collab hook — logs abnormal WebSocket closes
+// (HocuspocusProvider onClose/onDisconnect), previously silent. Vendored
+// file, same as witslog-browser.js above — not an npm package.
+const { witslogWebSocketWatch } = require('./witslog-websocket'); // bindings/browser/witslog-websocket.js
+const watch = witslogWebSocketWatch({ report: myBrowserReporter });
+new HocuspocusProvider({ ..., onClose: watch.onClose, onDisconnect: watch.onDisconnect });
+```
+
 See [bindings/CONTRACT.md](bindings/CONTRACT.md#node-sdk-auto-instrumentation-fetch-nextjs-react-query-adapters)
-and the [Node SDK README](bindings/node/README.md) for the full API.
+(and its ["Correlation + network-tab-equivalent capture"](bindings/CONTRACT.md#correlation--network-tab-equivalent-capture-axios--websocket-adapters)
+section) and the [Node SDK README](bindings/node/README.md) for the full API.
 
 ## 🧭 Status
 

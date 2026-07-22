@@ -206,6 +206,43 @@ See [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRAC
 for the full design (including the `context.root_cause` convention `exception()`/`witslogFetch`
 use, and how `clampContext` bounds what an ingest endpoint accepts).
 
+### Correlation id + network-tab-equivalent capture
+
+Closes the "a React Query failure can't be correlated with the proxy log for the same
+request" gap, plus transport-layer failures React Query never sees (WebSocket disconnects,
+direct axios calls).
+
+```js
+// client.ts — mints/reuses a correlation id per request (propagated as a header,
+// default x-request-id), stamps correlationId/latencyMs onto the response/rejected
+// error. Does NOT log every rejection itself (attachWitslog already captures every
+// React-Query-managed failure) — opt a specific call into direct capture instead:
+import { witslogAxiosInterceptor } from '@all-wits/witslog/frameworks/axios';
+
+witslogAxiosInterceptor(apiClient, { report: myBrowserReporter, tags: ['my-app'] });
+
+// a call that bypasses React Query entirely (e.g. an imperative token fetch)
+apiClient.get('/collab/ticket', { witslogDirectCapture: true });
+```
+
+`frameworks/react-query.js`'s `buildEvent` reads `error.correlationId`/`error.latencyMs`
+(when stamped by the interceptor above) into `correlation_id`/`context.timing.latency_ms`,
+and independently computes latency from TanStack Query v5's
+`state.submittedAt`/`state.errorUpdatedAt` when those aren't present — no extra wiring
+needed for either.
+
+`bindings/browser/witslog-websocket.js`'s `witslogWebSocketWatch(opts)` (vendored file,
+alongside `witslog-browser.js` — not an npm subpath) returns `{onClose, onDisconnect}`
+handlers shaped for `HocuspocusProvider`'s constructor options, logging abnormal closes
+(`code` not 1000/1001) with `error_code: WS_CLOSE_<code>` and
+`context.ws: {code, reason, wasClean}`:
+
+```js
+const { witslogWebSocketWatch } = require('./witslog-websocket');
+const watch = witslogWebSocketWatch({ report: myBrowserReporter });
+new HocuspocusProvider({ ..., onClose: watch.onClose, onDisconnect: watch.onDisconnect });
+```
+
 ## 🧱 Works with your Node.js stack
 
 `@all-wits/witslog` is a plain npm/pnpm/bun package with no bundler-specific glue — it works
@@ -258,6 +295,8 @@ in **any Node.js process**, which covers the server side of most modern framewor
 | `@all-wits/witslog/frameworks/next` | `register(app, config?)` / `onRequestError(err, req, ctx)` / `withWitslog(handler, opts?)` | Next.js server-error capture. |
 | `@all-wits/witslog/frameworks/next` | `witslogNextIngest(options)` | Browser-ingest endpoint, Next.js Route Handler shape. |
 | `@all-wits/witslog/frameworks/react-query` | `attachWitslog(queryClient, opts)` | Global React Query mutation/query failure capture. |
+| `@all-wits/witslog/frameworks/axios` | `witslogAxiosInterceptor(axiosInstance, opts?)` | Correlation-id propagation + latency stamping on an axios instance. |
+| `bindings/browser/witslog-websocket.js` (vendored, not an npm subpath) | `witslogWebSocketWatch(opts)` | Abnormal WebSocket close/disconnect capture. |
 
 ## 🌍 Platform support
 
