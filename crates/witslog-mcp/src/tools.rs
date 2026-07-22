@@ -187,6 +187,17 @@ impl Tool {
                     }
                 }),
             },
+            Tool {
+                name: "get_event".to_string(),
+                description: "Full event payload by id — every field (exception, stacktrace, error_code, root_cause, context, tags, metadata), not just the search-result summary. Read-only.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "event_id": {"type": "string"}
+                    },
+                    "required": ["event_id"]
+                }),
+            },
         ]
     }
 

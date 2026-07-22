@@ -1,15 +1,22 @@
 'use strict';
 
+// Packaged copy of ../browser/witslog-browser.js, published as the
+// `@all-wits/witslog/browser` subpath (added in 0.6.1 — package.json's
+// `files` array can only include paths under bindings/node/, so the
+// canonical file at bindings/browser/witslog-browser.js can't be referenced
+// directly from the npm tarball). Keep byte-identical to that file; the
+// canonical copy remains the source of truth for standalone `<script src>`
+// usage documented in bindings/CONTRACT.md and the repo READMEs.
+//
 // Zero-dep browser error reporter for witslog (P10d). Per PLAN.md §10, no
 // native/FFI code ever runs in the browser — this only ships JSON batches to
 // a backend endpoint (e.g. `witslogBrowserIngest` in
-// bindings/node/frameworks/express.js), which persists them via the Node SDK.
+// bindings/node/frameworks/express.js, or `witslogNextIngest` in
+// bindings/node/frameworks/next.js), which persists them via the Node SDK.
 //
 // Usage:
-//   <script src="witslog-browser.js"></script>
-//   <script>
-//     WitslogBrowser.init({ endpoint: '/__witslog', app: 'my-web-app' });
-//   </script>
+//   import WitslogBrowser from '@all-wits/witslog/browser';
+//   WitslogBrowser.init({ endpoint: '/api/witslog-ingest', app: 'my-web-app' });
 //
 // By default this only captures uncaught throws (`window.onerror`) and
 // unhandled promise rejections — most DevTools "red" console lines are

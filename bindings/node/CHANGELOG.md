@@ -10,6 +10,26 @@ the Rust workspace (pre-1.0).
 
 ### Added
 
+- **`@all-wits/witslog/browser` subpath — `browser.js`/`browser.d.ts`.**
+  Packaged copy of `bindings/browser/witslog-browser.js` (previously only a
+  vendored/`<script src>` file, not importable from npm — package.json's
+  `files` array can't reference paths outside `bindings/node/`). Import via
+  `import WitslogBrowser from '@all-wits/witslog/browser'`. Kept
+  byte-identical to the canonical file (regression-locked by
+  `test/browser_subpath.test.js`, which fails the build if the two drift).
+  New `captureConsole: true` config option (default `false`) additionally
+  captures `console.error`/`console.warn` calls and capture-phase
+  resource-load failures — see the canonical file's changelog entry in the
+  root `CHANGELOG.md` for full behavior. Tests:
+  `bindings/browser/test/witslog-browser.test.js`,
+  `test/browser_subpath.test.js`.
+- **Bundled CLI/native binary gains MCP `get_event` (full event payload)
+  and colorized `get`/`query` output.** Rust-side changes — a new read-only
+  MCP tool that returns the complete event (stacktrace/exception/context/
+  tags/metadata, previously only reachable via CLI `get --json`) and a new
+  CLI `--color <auto|always|never>` flag — ship to npm consumers via the
+  version bump + the binary `_bin/<platform>/witslog` this package bundles;
+  no SDK JS/TS API changed. See the root `CHANGELOG.md` for details.
 - **Instrumented fetch — `fetch.js`, `witslogFetch(input, init, opts)`.** Explicit wrapper
   around `fetch` (no global monkeypatch — stays safe alongside Next.js's own fetch
   caching/instrumentation). Automatically mints/propagates a correlation id

@@ -74,6 +74,7 @@ impl<'a> ToolRegistry<'a> {
             "top_failures" => self.top_failures(params),
             "mttr" => self.mttr(params),
             "list_traces" => self.list_traces(params),
+            "get_event" => self.get_event(params),
             "search_all" => self.search_all(params),
             "witslog_delete" => self.witslog_delete(params),
             _ => Err(McpError::MethodNotFound(name.to_string())),
@@ -240,7 +241,7 @@ impl<'a> ToolRegistry<'a> {
             .map(event_summary);
 
         Ok(json!({
-            "event": event_summary(&event),
+            "event": event_detail(&event),
             "root_cause": root_cause,
             "chain": trace.ordered_events.iter().map(event_summary).collect::<Vec<_>>(),
             "edges": trace.edges.iter().map(|e| json!({
@@ -561,6 +562,23 @@ impl<'a> ToolRegistry<'a> {
         Ok(ids)
     }
 
+    /// Full event payload by id — every field, unlike `event_summary`. The
+    /// only MCP tool that returns a complete `Event` (mirrors CLI `get
+    /// --json`); every other tool intentionally stays on the lean summary
+    /// (see `event_summary` doc comment) so lists don't bloat with
+    /// stacktraces/metadata.
+    fn get_event(&self, params: Value) -> Result<Value> {
+        let event_id = str_field(&params, "event_id")
+            .ok_or_else(|| McpError::InvalidParams("missing 'event_id'".to_string()))?;
+
+        let event = EventWriter::new(self.db)
+            .query_by_id(&event_id)
+            .map_err(|e| McpError::DbError(e.to_string()))?
+            .ok_or_else(|| McpError::InvalidParams("event not found".to_string()))?;
+
+        Ok(event_detail(&event))
+    }
+
     /// Resolve `event_id`/`fingerprint` params to a concrete `event_id`,
     /// used by `explain_error` and `similar_errors`.
     fn resolve_event_id(&self, params: &Value) -> Result<String> {
@@ -595,6 +613,14 @@ fn event_summary(e: &witslog_core::Event) -> Value {
         "parent_event_id": e.parent_event_id,
         "resolved_at": e.resolved_at
     })
+}
+
+/// Full event payload — every field, including exception/stacktrace/
+/// error_code/root_cause/context/tags/metadata that `event_summary` drops.
+/// Used by `get_event` and `explain_error`'s focal event; mirrors CLI `get
+/// --json` (`witslog-cli/src/main.rs`'s `get_event`, `serde_json::to_string_pretty(&event)`).
+fn event_detail(e: &witslog_core::Event) -> Value {
+    serde_json::to_value(e).unwrap_or_else(|_| event_summary(e))
 }
 
 fn str_field(params: &Value, key: &str) -> Option<String> {

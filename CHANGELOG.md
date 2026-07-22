@@ -9,6 +9,53 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ### Added
 
+- **Browser reporter captures `console.error`/`console.warn` + resource-load failures**
+  (`@all-wits/witslog` 0.6.1, `bindings/browser/witslog-browser.js` +
+  packaged copy `bindings/node/browser.js`): previously only uncaught throws
+  (`window.onerror`) and unhandled promise rejections were captured, so most
+  DevTools "red" console lines — React caught-error logs, prop/hydration
+  warnings, third-party libs calling `console.error`/`console.warn` without
+  throwing — were invisible to witslog. New opt-in `captureConsole: true`
+  wraps `console.error` (severity `error`, tag `console`) and `console.warn`
+  (severity `warn`, tag `console`) — always calling the original method
+  first so developer output is never swallowed — plus a re-entrancy guard so
+  a `console.error` triggered *by* reporting itself can't recurse
+  infinitely. Also adds capture-phase resource-load error capture (tag
+  `resource`) for `<img>`/`<script>`/`<link>` failures, which fire a
+  non-bubbling `error` event `window.onerror` never sees. Off by default
+  (opt-in — avoids console noise / behavior change for existing callers).
+  Regression tests: `bindings/browser/test/witslog-browser.test.js`.
+
+- **MCP `get_event` tool — full event payload by id** (`crates/witslog-mcp`):
+  every prior event-returning tool routed through `event_summary()`
+  (`registry.rs`), a lean 10-field projection that drops `exception`,
+  `stacktrace`, `error_code`, `root_cause`, `context`, `tags`, `metadata` —
+  so an MCP-connected AI assistant could search for an error but never read
+  its stacktrace. New read-only `get_event` tool (`{event_id}` →
+  full `Event`, serialized the same way as CLI `get --json`) closes that
+  gap; `explain_error`'s focal `event` field is now also full detail (its
+  `chain`/`root_cause` stay on the lean summary so lists don't bloat).
+  `event_summary` itself is intentionally unchanged — it still feeds
+  search/latest/similar/list_traces/search_all, where a full payload per row
+  would make lists unreadable. No FFI/ABI change (MCP JSON only). Builtin
+  tool count: 13 → 14. Regression tests:
+  `crates/witslog-mcp/tests/p5_integration.rs`
+  (`get_event_returns_full_payload_including_stacktrace`,
+  `get_event_unknown_id_returns_invalid_params`,
+  `explain_error_focal_event_includes_stacktrace`).
+
+- **CLI `--color` — severity/status chips and badges on `get`/`query`**
+  (`crates/witslog-cli`): output was plain `println!` with no visual
+  indicator for severity or resolved/unresolved status. New `style` module
+  (`crates/witslog-cli/src/style.rs`) is the CLI's "design tokens" — one
+  severity → (color, glyph) map and one resolved → badge map, reused by
+  every renderer — applied to `get`'s detail view and `query`'s summary
+  lines. New global `--color <auto|always|never>` flag (default `auto`:
+  colorizes only on a real TTY, honors `NO_COLOR`); `--json` output is never
+  colorized and stays byte-identical regardless of `--color`. Regression
+  tests: `crates/witslog-cli/tests/p12_color_output.rs` +
+  `crates/witslog-cli/src/style.rs` unit tests.
+
 - **Zero-boilerplate auto-instrumentation for the Node SDK** (`@all-wits/witslog` 0.5.0),
   closing the gap where every route handler/outbound fetch call needed its own hand-written
   `try/catch` + `witslog.exception`/`witslog.error`, and client-side (React Query)

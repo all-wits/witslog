@@ -108,9 +108,23 @@ app.use(witslogErrorHandler('myapp'));   // last, after routes
 
 ### 🌐 Browser-side error capture
 
-Pairs with [`bindings/browser/witslog-browser.js`](https://github.com/all-wits/witslog/tree/main/bindings/browser) — a zero-dep client reporter
-that batches `window.onerror` / unhandled-rejection events and ships them via
-`navigator.sendBeacon` to this ingest endpoint.
+Pairs with the browser reporter — a zero-dep client that batches `window.onerror` /
+unhandled-rejection events (plus, opt-in, `console.error`/`console.warn` and resource-load
+failures) and ships them via `navigator.sendBeacon` to this ingest endpoint. Available two
+ways: as the npm subpath `@all-wits/witslog/browser` (0.6.1+, packaged copy) for
+bundler/import usage, or the standalone
+[`bindings/browser/witslog-browser.js`](https://github.com/all-wits/witslog/tree/main/bindings/browser)
+for a plain `<script src>` — same API either way.
+
+```js
+import WitslogBrowser from '@all-wits/witslog/browser';
+
+const reporter = WitslogBrowser.init({
+  endpoint: '/api/witslog-ingest',
+  app: 'my-web-app',
+  captureConsole: true, // also captures console.error/warn + resource-load failures
+});
+```
 
 ```js
 const { witslogBrowserIngest } = require('@all-wits/witslog/frameworks/express');
@@ -296,6 +310,7 @@ in **any Node.js process**, which covers the server side of most modern framewor
 | `@all-wits/witslog/frameworks/next` | `witslogNextIngest(options)` | Browser-ingest endpoint, Next.js Route Handler shape. |
 | `@all-wits/witslog/frameworks/react-query` | `attachWitslog(queryClient, opts)` | Global React Query mutation/query failure capture. |
 | `@all-wits/witslog/frameworks/axios` | `witslogAxiosInterceptor(axiosInstance, opts?)` | Correlation-id propagation + latency stamping on an axios instance. |
+| `@all-wits/witslog/browser` (0.6.1+) | `WitslogBrowser.init(config)` | Browser-side client reporter — `window.onerror`/unhandled-rejection by default, plus `console.error`/`console.warn` + resource-load failures with `captureConsole: true`. |
 | `bindings/browser/witslog-websocket.js` (vendored, not an npm subpath) | `witslogWebSocketWatch(opts)` | Abnormal WebSocket close/disconnect capture. |
 
 ## 🌍 Platform support

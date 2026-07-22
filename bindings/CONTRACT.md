@@ -32,6 +32,13 @@ breaking change to the payloads below.
 All string parameters are NUL-terminated UTF-8. The caller owns the input buffers; the library
 owns (and frees, via `witslog_free_string`) any `char*` it returns.
 
+**This export list is write-only by design** — `query`/`stats`/`export`/`serve-mcp`/`doctor`
+have no C ABI surface; they're only reachable via the CLI or the MCP server
+(`crates/witslog-query`/`witslog-mcp`). The MCP server's `get_event` tool (added alongside this
+contract version, still `1` — MCP JSON is a separate surface from `witslog_log`/`configure`)
+returns the full event payload (stacktrace/exception/context/tags/metadata) by id, mirroring
+CLI `get --json`; it does not add or change anything here.
+
 ## `witslog_log` payload (JSON object)
 
 | Field | Type | Req | Notes |
@@ -173,7 +180,11 @@ the same way.
 ## Browser-side error capture (P10) — ingest recipe for Python/PHP
 
 `bindings/browser/witslog-browser.js` ships client-side JS errors to a server-side ingest
-endpoint via `navigator.sendBeacon`/`fetch`. A Node adapter ships
+endpoint via `navigator.sendBeacon`/`fetch`. Also published (0.6.1+) as the npm subpath
+`@all-wits/witslog/browser` (`bindings/node/browser.js` + `.d.ts`) — a byte-identical packaged
+copy for bundler/import usage, regression-locked against the canonical file by
+`bindings/node/test/browser_subpath.test.js`; the canonical `bindings/browser/witslog-browser.js`
+stays the source of truth for standalone `<script src>` usage. A Node adapter ships
 (`witslogBrowserIngest` in `bindings/node/frameworks/express.js`); Python/PHP adapters are
 **not** shipped — three parallel handlers accepting untrusted input is three attack
 surfaces to keep in sync for a feature whose whole risk lives in that handling. The
@@ -200,6 +211,26 @@ MCP-connected LLM). Port the Node handler's logic (see its source for the full r
 True provenance (an `ingest_source` field trusted by the query layer) isn't in the
 payload contract above and would need a `WITSLOG_ABI_VERSION` bump — out of scope until
 a real need shows up.
+
+**`captureConsole` (0.6.1+, `init({..., captureConsole: true})`).** Off by default — the
+reporter otherwise only captures uncaught throws (`window.onerror`) and unhandled promise
+rejections, missing most DevTools "red" lines (`console.error`/`console.warn` calls that never
+throw — React caught-error logs, prop/hydration warnings, third-party libs). When enabled:
+
+- Wraps `console.error` (severity `error`) and `console.warn` (severity `warn`), tagging
+  every captured event `['console']`. The **original** console method is always invoked first
+  — capture never swallows real developer output, including when reporting itself fails.
+- A module-level re-entrancy guard prevents a `console.error`/`warn` call triggered *by*
+  reporting (e.g. via a `toJSON()` that itself logs, or a failed `fetch` that logs) from
+  recursing back into capture — the original console method still runs for that nested call,
+  only its own enqueue is skipped. Regression-locked by
+  `bindings/browser/test/witslog-browser.test.js`'s re-entrancy test.
+- Also adds capture-phase resource-load error capture (tag `['resource']`) for
+  `<img>`/`<script>`/`<link>` failures — these fire a non-bubbling `error` event that only a
+  capture-phase `window` listener observes; `onError`'s existing bubble-phase listener handles
+  ordinary script errors and is unaffected (different handler function — no double-enqueue).
+- Same trust posture as the rest of this section applies once captured text reaches the
+  ingest endpoint: it is untrusted input landing in `events.message`.
 
 **Context passthrough (`clampContext`, `bindings/node/lib/clamp.js`).** The Node ingest
 handler originally forwarded only `context.url`, dropping everything else an event's

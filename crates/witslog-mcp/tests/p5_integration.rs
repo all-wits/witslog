@@ -48,6 +48,7 @@ fn tools_list_reports_all_required_tools_with_valid_schemas() {
         "timeline",
         "top_failures",
         "list_traces",
+        "get_event",
     ];
 
     let tools = Tool::builtin_tools();
@@ -213,6 +214,85 @@ fn witslog_delete_absent_by_default_present_and_gated_with_allow_write() {
         .unwrap();
     assert_eq!(real_result["deleted_count"], json!(1));
     assert!(writer.query_by_id(&resolved_id).unwrap().is_none());
+}
+
+/// Regression lock for the "MCP can't see full error detail" gap:
+/// `event_summary` (used by search/latest/similar/list_traces/search_all)
+/// intentionally drops exception/stacktrace/error_code/context/tags/
+/// metadata to keep lists scannable — `get_event` is the one MCP tool that
+/// must return everything, mirroring CLI `get --json`. A future change that
+/// routes `get_event` back through `event_summary` would fail this test.
+#[test]
+fn get_event_returns_full_payload_including_stacktrace() {
+    let db = DbConnection::open(":memory:").unwrap();
+    db.migrate().unwrap();
+    let writer = EventWriter::new(&db);
+
+    let event = EventBuilder::new("checkout-svc", "payment gateway timeout")
+        .severity(Severity::Error)
+        .exception("GatewayTimeoutError")
+        .stacktrace("at charge (gateway.js:42)\nat process (worker.js:10)")
+        .error_code("GW_TIMEOUT")
+        .tags(vec!["payments".to_string()])
+        .context(json!({"attempt": 3}))
+        .build();
+    writer.write(&event).unwrap();
+
+    let registry = ToolRegistry::new(&db);
+    let detail = registry
+        .call_tool("get_event", json!({"event_id": event.event_id}))
+        .expect("get_event should succeed");
+
+    assert_eq!(detail["event_id"], json!(event.event_id));
+    assert_eq!(detail["exception"], json!("GatewayTimeoutError"));
+    assert_eq!(
+        detail["stacktrace"],
+        json!("at charge (gateway.js:42)\nat process (worker.js:10)")
+    );
+    assert_eq!(detail["error_code"], json!("GW_TIMEOUT"));
+    assert_eq!(detail["tags"], json!(["payments"]));
+    assert_eq!(detail["context"], json!({"attempt": 3}));
+}
+
+#[test]
+fn get_event_unknown_id_returns_invalid_params() {
+    let db = setup_db_with_events();
+    let registry = ToolRegistry::new(&db);
+
+    let err = registry
+        .call_tool("get_event", json!({"event_id": "does-not-exist"}))
+        .unwrap_err();
+    assert!(matches!(err, McpError::InvalidParams(_)));
+}
+
+/// Regression lock: `explain_error`'s focal `event` field must carry the
+/// full payload (stacktrace/exception), not the lean `event_summary` other
+/// tools use — this is what lets an AI assistant read a stacktrace via
+/// `explain_error` without a separate `get_event` round-trip.
+#[test]
+fn explain_error_focal_event_includes_stacktrace() {
+    let db = DbConnection::open(":memory:").unwrap();
+    db.migrate().unwrap();
+    let writer = EventWriter::new(&db);
+
+    let event = EventBuilder::new("checkout-svc", "payment gateway timeout")
+        .severity(Severity::Error)
+        .exception("GatewayTimeoutError")
+        .stacktrace("at charge (gateway.js:42)")
+        .category("infrastructure.network.timeout")
+        .build();
+    writer.write(&event).unwrap();
+
+    let registry = ToolRegistry::new(&db);
+    let dossier = registry
+        .call_tool("explain_error", json!({"event_id": event.event_id}))
+        .expect("explain_error should succeed");
+
+    assert_eq!(dossier["event"]["exception"], json!("GatewayTimeoutError"));
+    assert_eq!(
+        dossier["event"]["stacktrace"],
+        json!("at charge (gateway.js:42)")
+    );
 }
 
 #[test]

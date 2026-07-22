@@ -29,15 +29,17 @@ query.
 - 🏷️ **Deterministic taxonomy** — rule-based auto-classification, no model/embedding needed.
 - 🔒 **Redaction built in** — secrets/PII stripped before anything touches disk.
 - 🔗 **Correlation & fingerprinting** — dedup recurring errors, walk causality chains.
-- 🤖 **MCP server** — 13 read tools + 1 gated write tool for any MCP-compatible assistant.
+- 🤖 **MCP server** — 14 read tools (including `get_event`, the full event payload — stacktrace,
+  exception, context, tags, metadata — for AI-assisted debugging) + 1 gated write tool.
 - 🌍 **Cross-language SDKs** — Node, Python, PHP/Laravel over a shared C ABI.
 - ⏱️ **Resolution tracking & MTTR** — mark errors resolved, filter the unresolved backlog,
   fingerprint-level mean time-to-resolution.
 - 🔔 **Notifiers** — file-based (NDJSON) notification on new events above a severity
   threshold, throttled per fingerprint. Extensible via `witslog-plugin`'s `Notifier` trait.
 - 🌐 **Browser-side error capture** — a zero-dep client reporter ships `window.onerror` /
-  unhandled-rejection batches to a guarded server-side ingest endpoint, so client and
-  server errors land in the same queryable DB.
+  unhandled-rejection batches (plus, opt-in, `console.error`/`console.warn` and resource-load
+  failures) to a guarded server-side ingest endpoint, so client and server errors land in the
+  same queryable DB.
 
 ## 📦 Install
 
@@ -121,13 +123,21 @@ equivalents (which still need the CLI's `witslog init` for now — see each READ
 
 Client-rendered JS errors (`window.onerror`, unhandled promise rejections) join the same DB
 via a zero-dep reporter + a guarded server-side ingest endpoint — no native/FFI code runs in
-the browser.
+the browser. Pass `captureConsole: true` to also capture `console.error`/`console.warn` calls
+(tagged `console` — the source of most DevTools "red" lines that never throw, e.g. React
+caught-error logs) and resource-load failures (tagged `resource`, e.g. a 404'd `<img>`/`<script>`).
 
 ```html
 <script src="witslog-browser.js"></script>
 <script>
-  WitslogBrowser.init({ endpoint: '/__witslog', app: 'my-web-app' });
+  WitslogBrowser.init({ endpoint: '/__witslog', app: 'my-web-app', captureConsole: true });
 </script>
+```
+
+```js
+// Node/npm — @all-wits/witslog/browser subpath (0.6.1+), same API as the <script src> above
+import WitslogBrowser from '@all-wits/witslog/browser';
+WitslogBrowser.init({ endpoint: '/api/witslog-ingest', app: 'my-web-app', captureConsole: true });
 ```
 
 ```js
@@ -202,7 +212,7 @@ extensibility/security, and MTTR/notifiers/browser capture are shipped and teste
 | P2 | Taxonomy engine (auto-classify) | ✅ |
 | P3 | FTS5 + query engine (search/aggregates/correlation) | ✅ |
 | P4 | CLI utilities (export/import/prune/archive/backup/..., global `--json`) | ✅ |
-| P5 | MCP server (13 tools, JSON-RPC/stdio) | ✅ |
+| P5 | MCP server (14 tools, JSON-RPC/stdio) | ✅ |
 | P6 | SDK bindings (Node/Python/PHP + framework adapters) | ✅ |
 | P7 | Perf benches + concurrency hardening | ✅ |
 | P8 | Packaging + cross-platform install | 🟡 install scripts + release CI + smoke test shipped, verified green on GitHub Actions; no cut release yet |

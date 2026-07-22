@@ -4,6 +4,9 @@ use witslog_config::Config;
 use witslog_core::{EventBuilder, Severity};
 use witslog_store::{DeleteFilter, Store};
 
+mod style;
+use style::ColorMode;
+
 #[derive(Parser)]
 #[command(name = "witslog")]
 #[command(version)]
@@ -21,6 +24,12 @@ struct Cli {
     /// behind a bare `id [app] Severity :: message` line.
     #[arg(global = true, long)]
     json: bool,
+
+    /// Colorize `get`/`query` output: `auto` (default) colorizes only on a
+    /// real TTY and honors `NO_COLOR`; `always`/`never` override detection.
+    /// Never affects `--json`, which stays byte-identical for scripts/CI.
+    #[arg(global = true, long, value_enum, default_value_t = ColorMode::Auto)]
+    color: ColorMode,
 }
 
 #[derive(Subcommand)]
@@ -213,7 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         Commands::Get { event_id } => {
-            get_event(&cli.db, &event_id, cli.json)?;
+            get_event(&cli.db, &event_id, cli.json, style::should_colorize(cli.color))?;
         }
         Commands::Query {
             text,
@@ -226,7 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             query_search(
                 &cli.db, &text, application, category, severity_min, unresolved, limit, cursor,
-                cli.json,
+                cli.json, style::should_colorize(cli.color),
             )?;
         }
         Commands::Stats { application, severity_min, mttr } => {
@@ -400,6 +409,7 @@ fn get_event(
     db_override: &Option<PathBuf>,
     event_id: &str,
     json: bool,
+    colorize: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
@@ -415,7 +425,11 @@ fn get_event(
                 println!("{}", serde_json::to_string_pretty(&event)?);
                 return Ok(());
             }
-            println!("Event found:");
+            println!(
+                "Event found:  {}  {}",
+                style::severity_chip(event.severity, colorize),
+                style::status_badge(event.resolved_at.is_some(), colorize)
+            );
             println!("  event_id: {}", event.event_id);
             println!("  timestamp: {}", event.timestamp);
             println!("  application: {}", event.application);
@@ -426,7 +440,7 @@ fn get_event(
                 println!("  category: {}", cat);
             }
             if let Some(code) = &event.error_code {
-                println!("  error_code: {}", code);
+                println!("  error_code: {}", style::dim(code, colorize));
             }
             if let Some(exc) = &event.exception {
                 println!("  exception: {}", exc);
@@ -445,7 +459,7 @@ fn get_event(
             }
             if let Some(tags) = &event.tags {
                 if !tags.is_empty() {
-                    println!("  tags: {}", tags.join(", "));
+                    println!("  tags: {}", style::dim(&tags.join(", "), colorize));
                 }
             }
             if let Some(ctx) = &event.context {
@@ -487,6 +501,7 @@ fn query_search(
     limit: usize,
     cursor: Option<String>,
     json: bool,
+    colorize: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
@@ -532,15 +547,22 @@ fn query_search(
         // appended when present since they're the highest-signal fields for
         // triage (full detail — context/stacktrace/etc — needs --json).
         let mut line = format!(
-            "{}  [{}] {:?} :: {}",
-            event.event_id, event.application, event.severity, event.message
+            "{}  [{}] {}  {} :: {}",
+            event.event_id,
+            event.application,
+            style::severity_chip(event.severity, colorize),
+            style::status_badge(event.resolved_at.is_some(), colorize),
+            event.message
         );
         if let Some(code) = &event.error_code {
-            line.push_str(&format!("  [{}]", code));
+            line.push_str(&format!("  {}", style::dim(&format!("[{}]", code), colorize)));
         }
         if let Some(tags) = &event.tags {
             if !tags.is_empty() {
-                line.push_str(&format!("  #{}", tags.join(" #")));
+                line.push_str(&format!(
+                    "  {}",
+                    style::dim(&format!("#{}", tags.join(" #")), colorize)
+                ));
             }
         }
         println!("{}", line);
