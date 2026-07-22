@@ -172,6 +172,14 @@ independently at pre-1.0 — this file tracks the project as a whole.
     clean "no prebuilt binary, use cargo install" error every other unsupported arch gets.
     Windows ARM64 now falls through to that same unsupported-arch path.
 
+## [0.1.5] — 2026-07-22
+
+### Fixed
+
+- MCP server rejected the standard `initialize` handshake — see `[Unreleased]` above for
+  the full entry; this cut ships that fix in a versioned binary/release artifact
+  (`release.yml` cross-platform build + GitHub Release).
+
 ## [0.1.3] — 2026-07-18
 
 ### Added
