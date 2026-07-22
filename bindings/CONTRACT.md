@@ -254,6 +254,45 @@ route handler or fetch call previously required:
   `bindings/node/lib/ingest-core.js` (`checkIngestGuardrails`, `persistIngestBatch`) so the
   security-relevant checks (guardrails 1–5 above) can't drift between the two transports.
 
+## Correlation + network-tab-equivalent capture (axios / WebSocket adapters)
+
+Two more Node/browser-only additions close the "client failure can't be correlated with
+the proxy log for the same request" gap and cover transports outside React Query's
+mutation/query lifecycle:
+
+- **`bindings/node/frameworks/axios.js` — `witslogAxiosInterceptor(axiosInstance, opts)`.**
+  A request interceptor mints a correlation id (`crypto.randomUUID()`) if the outbound
+  request doesn't already carry one, and sets it as a header (default `x-request-id`,
+  configurable via `opts.correlationHeader` — same option name as `witslogFetch`). The
+  response/error interceptor stamps `correlationId`/`latencyMs` onto the response or
+  rejected error object; it does **not** call `witslog.log` for every rejection itself
+  (that would double-log every request React Query's `attachWitslog` already captures) —
+  direct capture is opt-in per request via `config.witslogDirectCapture = true`, for call
+  sites that bypass React Query entirely. `frameworks/react-query.js`'s `buildEvent` reads
+  `error.correlationId`/`error.latencyMs` (duck-typed, same pattern as its existing
+  `error.status`/`error.code` reads) into `correlation_id`/`context.timing.latency_ms` when
+  present — this is what lets a `witsnote-client` mutation-failure event and the
+  `witsnote-proxy` event for the same HTTP request share one `correlation_id`. No
+  `route.ts`/proxy-side change is needed: `witslogFetch` already reads an inbound
+  `x-request-id` as its own correlation-id fallback.
+- **`frameworks/react-query.js`'s `buildEvent` also computes client-side latency** from
+  TanStack Query v5's `state.submittedAt`/`state.errorUpdatedAt` into
+  `context.timing.latency_ms` when the axios-stamped `latencyMs` isn't present — always-on,
+  no new opts required.
+- **`bindings/browser/witslog-websocket.js` — `witslogWebSocketWatch(opts)`.** Browser-only,
+  alongside `witslog-browser.js`. Returns `{onClose, onDisconnect}` handlers shaped to drop
+  directly into a WebSocket-wrapping provider's constructor options (verified against
+  `HocuspocusProvider`: `onClose({event: CloseEvent})` / `onDisconnect({event: CloseEvent})`,
+  a standard `CloseEvent` with `.code`/`.reason`/`.wasClean`). Logs only "abnormal" closes
+  (`event.code` not `1000`/`1001`) with `error_code: WS_CLOSE_<code>`,
+  `context.ws: {code, reason, wasClean}`, `tags: ['network', 'websocket', ...opts.tags]`.
+- **`buildBatch`/`makeErrorEvent` (`bindings/browser/witslog-browser.js`) and
+  `persistIngestBatch` (`bindings/node/lib/ingest-core.js`) now forward `error_code` /
+  `correlation_id` / `tags`** from a captured browser event through to the ingest payload
+  and on into `witslog.log` — previously only `message`/`severity`/`exception`/`stacktrace`/
+  `context.url` survived the browser→ingest hop, silently dropping the correlation id a
+  richer capture layer (React Query adapter, WebSocket watch) now always sets.
+
 ## Mount / flush lifecycle
 
 `tracing` (the Rust ambient capture) does **not** cross the ABI. Each SDK:

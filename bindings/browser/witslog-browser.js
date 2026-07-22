@@ -20,6 +20,9 @@ function buildBatch(events, meta) {
       severity: e.severity || 'error',
       exception: e.exception,
       stacktrace: e.stacktrace,
+      error_code: e.error_code,
+      correlation_id: e.correlation_id,
+      tags: e.tags,
       context: e.context,
     })),
   };

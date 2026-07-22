@@ -36,7 +36,7 @@
  * Error, or anything thrown) into the witslog browser-ingest event shape
  * (see witslogBrowserIngest in frameworks/express.js for the accepted keys).
  */
-function buildEvent(error, { tags, context }) {
+function buildEvent(error, { tags, context, latencyMs }) {
   const err = error instanceof Error ? error : new Error(error != null ? String(error) : 'React Query error');
   // ApiError (client/lib/api/errors.ts) carries `.code`/`.status`/`.details`
   // directly on the error object — NOT under `.response.status` (that mismatch
@@ -44,6 +44,10 @@ function buildEvent(error, { tags, context }) {
   // branch). Reading `.code`/`.status` here matches the actual shape.
   const errorCode = typeof error?.code === 'string' ? error.code : undefined;
   const status = typeof error?.status === 'number' ? error.status : undefined;
+  // witslogAxiosInterceptor (frameworks/axios.js) stamps these directly onto
+  // the rejected error object — duck-typed read, same pattern as .code/.status.
+  const correlationId = typeof error?.correlationId === 'string' ? error.correlationId : undefined;
+  const axiosLatencyMs = typeof error?.latencyMs === 'number' ? error.latencyMs : undefined;
 
   return {
     message: err.message || 'React Query error',
@@ -51,12 +55,23 @@ function buildEvent(error, { tags, context }) {
     exception: err.name,
     stacktrace: err.stack,
     error_code: errorCode,
+    correlation_id: correlationId,
     tags,
     context: {
       ...context,
       http_status: status,
+      timing: { latency_ms: axiosLatencyMs ?? latencyMs },
     },
   };
+}
+
+/** TanStack Query v5 state exposes submittedAt/errorUpdatedAt on mutations, dataUpdatedAt/errorUpdatedAt on queries. */
+function computeLatencyMs(state) {
+  const startedAt = typeof state?.submittedAt === 'number' ? state.submittedAt : undefined;
+  const endedAt = typeof state?.errorUpdatedAt === 'number' ? state.errorUpdatedAt : undefined;
+  return startedAt !== undefined && endedAt !== undefined && endedAt >= startedAt
+    ? endedAt - startedAt
+    : undefined;
 }
 
 function resolveEmit(report) {
@@ -91,6 +106,7 @@ function attachWitslog(queryClient, opts = {}) {
     emit(
       buildEvent(mutation.state.error, {
         tags: [...tags, 'react-query', 'mutation'],
+        latencyMs: computeLatencyMs(mutation.state),
         context: {
           mutationKey: mutation.options && mutation.options.mutationKey,
           variables: mutation.state.variables,
@@ -109,6 +125,7 @@ function attachWitslog(queryClient, opts = {}) {
       emit(
         buildEvent(query.state.error, {
           tags: [...tags, 'react-query', 'query'],
+          latencyMs: computeLatencyMs(query.state),
           context: { queryKey: query.queryKey },
         })
       );

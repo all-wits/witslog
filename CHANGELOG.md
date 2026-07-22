@@ -47,6 +47,33 @@ independently at pre-1.0 — this file tracks the project as a whole.
   `--json` flag emitting the full structured event(s) (`witslog-cli/src/main.rs`). Regression
   tests: `crates/witslog-cli/tests/p11_json_output.rs`.
 
+- **Correlation-id propagation + network-tab-equivalent capture** (`@all-wits/witslog`),
+  closing two gaps found during live verification of the auto-instrumentation work above:
+  `witsnote-client` events had no way to be correlated with the `witsnote-proxy` event for
+  the same HTTP request, and transport-layer failures outside React Query's mutation/query
+  lifecycle (WebSocket disconnects, direct axios calls) were captured nowhere:
+  - `bindings/node/frameworks/axios.js` — `witslogAxiosInterceptor(axiosInstance, opts)`
+    mints/reuses a correlation id per request (propagates via header, default
+    `x-request-id`), stamps `correlationId`/`latencyMs` onto the response/rejected-error
+    object, and only directly logs a request when opted in via
+    `config.witslogDirectCapture = true` — avoids double-logging what `attachWitslog`
+    already captures.
+  - `bindings/node/frameworks/react-query.js`'s `buildEvent` now reads
+    `error.correlationId`/`error.latencyMs` (when stamped by the axios interceptor) into
+    `correlation_id`/`context.timing.latency_ms`, and computes latency itself from
+    TanStack Query v5's `state.submittedAt`/`state.errorUpdatedAt` when the axios fields
+    aren't present.
+  - `bindings/browser/witslog-websocket.js` — `witslogWebSocketWatch(opts)`, browser-only,
+    returns `{onClose, onDisconnect}` handlers shaped for `HocuspocusProvider`'s
+    constructor options; logs abnormal WebSocket closes (`code` not 1000/1001) with
+    `error_code: WS_CLOSE_<code>` and `context.ws: {code, reason, wasClean}`.
+  - `buildBatch`/`makeErrorEvent` (`bindings/browser/witslog-browser.js`) and
+    `persistIngestBatch` (`bindings/node/lib/ingest-core.js`) now forward
+    `error_code`/`correlation_id`/`tags` end-to-end — previously dropped at the
+    browser→ingest hop.
+  - See `bindings/CONTRACT.md` ("Correlation + network-tab-equivalent capture") for the
+    full design.
+
 ### Fixed
 
 - **Node SDK (`@all-wits/witslog`) undocumented under Next.js bundling**: `witslog.init()` in a

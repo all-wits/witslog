@@ -136,6 +136,47 @@ test('report as a {enqueue} object (e.g. WitslogBrowser.init() return value) wor
   assert.strictEqual(enqueued.length, 1);
 });
 
+test('computes latency_ms from mutation state.submittedAt/errorUpdatedAt', () => {
+  const qc = fakeQueryClient();
+  const events = [];
+  attachWitslog(qc, { report: (e) => events.push(e) });
+
+  qc.__mutationCache.fire({
+    type: 'updated',
+    mutation: {
+      options: {},
+      state: {
+        status: 'error',
+        error: new Error('boom'),
+        variables: {},
+        submittedAt: 1000,
+        errorUpdatedAt: 1042,
+      },
+    },
+  });
+
+  assert.strictEqual(events[0].context.timing.latency_ms, 42);
+});
+
+test('reads correlation_id/latencyMs stamped by witslogAxiosInterceptor onto the error object', () => {
+  const qc = fakeQueryClient();
+  const events = [];
+  attachWitslog(qc, { report: (e) => events.push(e) });
+
+  const err = Object.assign(new Error('unreachable'), {
+    correlationId: 'corr-123',
+    latencyMs: 77,
+  });
+
+  qc.__mutationCache.fire({
+    type: 'updated',
+    mutation: { options: {}, state: { status: 'error', error: err, variables: {} } },
+  });
+
+  assert.strictEqual(events[0].correlation_id, 'corr-123');
+  assert.strictEqual(events[0].context.timing.latency_ms, 77);
+});
+
 test('a non-Error thrown value (e.g. a rejected string) is normalized to a message', () => {
   const qc = fakeQueryClient();
   const events = [];

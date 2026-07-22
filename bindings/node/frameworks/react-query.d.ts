@@ -18,6 +18,7 @@ export interface CapturedEvent {
   exception?: string;
   stacktrace?: string;
   error_code?: string;
+  correlation_id?: string;
   tags?: string[];
   context?: Record<string, unknown>;
 }

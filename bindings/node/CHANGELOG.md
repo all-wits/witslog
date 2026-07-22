@@ -51,6 +51,31 @@ the Rust workspace (pre-1.0).
   being silently dropped at the ingest boundary. `"browser"` remains the first, unremovable tag.
   Tests: `test/clamp.test.js`, new cases in `test/express_ingest.test.js`.
 
+- **Axios interceptor — `frameworks/axios.js`, `witslogAxiosInterceptor(axiosInstance, opts)`.**
+  Mints/reuses a correlation id per request (propagated as a header, default
+  `x-request-id`, same convention as `fetch.js`) and stamps `correlationId`/`latencyMs`
+  onto the response/rejected-error object; does not log every rejection itself (avoids
+  double-logging what `attachWitslog` already captures) — direct capture is opt-in via
+  `config.witslogDirectCapture = true`. `frameworks/react-query.js`'s `buildEvent` now
+  reads `error.correlationId`/`error.latencyMs` into `correlation_id`/
+  `context.timing.latency_ms`, and independently computes latency from TanStack Query
+  v5's `state.submittedAt`/`state.errorUpdatedAt` when those aren't present. This is what
+  lets a `witsnote-client` event and the `witsnote-proxy` event for the same request share
+  one `correlation_id`. Tests: `test/axios.test.js`, new cases in
+  `test/react_query_adapter.test.js`.
+- **WebSocket close/disconnect capture — `bindings/browser/witslog-websocket.js`,
+  `witslogWebSocketWatch(opts)`.** Browser-only. Returns `{onClose, onDisconnect}`
+  handlers shaped for `HocuspocusProvider`'s constructor options (or any
+  `{event: CloseEvent}`-shaped hook); logs abnormal closes (`code` not 1000/1001) with
+  `error_code: WS_CLOSE_<code>` and `context.ws: {code, reason, wasClean}`. Closes the gap
+  where a collab WebSocket disconnecting produced no log at all. Tests:
+  `bindings/browser/test/witslog-websocket.test.js`.
+- **`buildBatch`/`makeErrorEvent` (`witslog-browser.js`) and `persistIngestBatch`
+  (`lib/ingest-core.js`) now forward `error_code`/`correlation_id`/`tags`** from a
+  captured browser event end-to-end — previously only `message`/`severity`/`exception`/
+  `stacktrace`/`context` survived the hop, silently dropping the correlation id the React
+  Query/WebSocket adapters now always set.
+
 ### Fixed
 
 - **`exception()` dropped the JS `Error.cause` chain.** Node's own `fetch` (undici) throws

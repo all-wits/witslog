@@ -107,6 +107,7 @@ function persistIngestBatch(rawBody, { application, maxBatch, maxBytes, userAgen
         exception: clampString(evt && evt.exception, 200),
         stacktrace: clampString(evt && evt.stacktrace, 8000),
         error_code: clampString(evt && evt.error_code, 100),
+        correlation_id: clampString(evt && evt.correlation_id, 100),
         tags: ['browser', ...extraTags],
         context: {
           ...clampContext(evt && evt.context),

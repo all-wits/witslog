@@ -22,6 +22,16 @@ test('buildBatch keeps caller-supplied severity', () => {
   assert.strictEqual(batch.events[0].severity, 'warn');
 });
 
+test('buildBatch forwards error_code/correlation_id/tags', () => {
+  const batch = buildBatch(
+    [{ message: 'boom', error_code: 'X', correlation_id: 'c1', tags: ['a', 'b'] }],
+    { app: 'app' }
+  );
+  assert.strictEqual(batch.events[0].error_code, 'X');
+  assert.strictEqual(batch.events[0].correlation_id, 'c1');
+  assert.deepStrictEqual(batch.events[0].tags, ['a', 'b']);
+});
+
 test('makeErrorEvent stringifies message', () => {
   const e = makeErrorEvent(42);
   assert.strictEqual(e.message, '42');
