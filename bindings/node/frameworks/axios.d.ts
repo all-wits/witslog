@@ -10,12 +10,15 @@ export interface AxiosInstanceLike {
 }
 
 export interface WitslogReporterLike {
-  enqueue(event: Record<string, unknown>): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts any event-shaped
+  // object (e.g. bindings/browser/witslog-browser.js's WitslogEvent, or a TS port's stricter
+  // interface); Record<string, unknown> rejects plain interfaces without an index signature.
+  enqueue(event: any): void;
 }
 
 export interface WitslogAxiosOptions {
   /** Sink for direct-capture events (requests with `witslogDirectCapture: true`). */
-  report?: ((event: Record<string, unknown>) => void) | WitslogReporterLike;
+  report?: ((event: any) => void) | WitslogReporterLike;
   /** extra tags merged onto directly-captured events */
   tags?: string[];
   /** header name used to propagate the correlation id (default 'x-request-id') */
