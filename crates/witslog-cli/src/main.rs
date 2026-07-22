@@ -14,6 +14,13 @@ struct Cli {
 
     #[arg(global = true, short, long)]
     db: Option<PathBuf>,
+
+    /// Emit full structured JSON instead of the default human-readable summary.
+    /// Applies to `get` and `query` — the two read paths that otherwise hide
+    /// captured `context`/`tags`/`stacktrace`/`error_code`/`correlation_id`
+    /// behind a bare `id [app] Severity :: message` line.
+    #[arg(global = true, long)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -206,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
         Commands::Get { event_id } => {
-            get_event(&cli.db, &event_id)?;
+            get_event(&cli.db, &event_id, cli.json)?;
         }
         Commands::Query {
             text,
@@ -219,6 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             query_search(
                 &cli.db, &text, application, category, severity_min, unresolved, limit, cursor,
+                cli.json,
             )?;
         }
         Commands::Stats { application, severity_min, mttr } => {
@@ -388,7 +396,11 @@ fn log_event(
     Ok(())
 }
 
-fn get_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn get_event(
+    db_override: &Option<PathBuf>,
+    event_id: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
     let config = Config::default_project();
@@ -399,6 +411,10 @@ fn get_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<dy
 
     match writer.query_by_id(event_id)? {
         Some(event) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&event)?);
+                return Ok(());
+            }
             println!("Event found:");
             println!("  event_id: {}", event.event_id);
             println!("  timestamp: {}", event.timestamp);
@@ -409,13 +425,52 @@ fn get_event(db_override: &Option<PathBuf>, event_id: &str) -> Result<(), Box<dy
             if let Some(cat) = &event.category {
                 println!("  category: {}", cat);
             }
+            if let Some(code) = &event.error_code {
+                println!("  error_code: {}", code);
+            }
+            if let Some(exc) = &event.exception {
+                println!("  exception: {}", exc);
+            }
+            if let Some(cid) = &event.correlation_id {
+                println!("  correlation_id: {}", cid);
+            }
+            if let Some(pid) = &event.parent_event_id {
+                println!("  parent_event_id: {}", pid);
+            }
+            if let Some(env) = &event.environment {
+                println!("  environment: {}", env);
+            }
+            if let Some(ver) = &event.version {
+                println!("  version: {}", ver);
+            }
+            if let Some(tags) = &event.tags {
+                if !tags.is_empty() {
+                    println!("  tags: {}", tags.join(", "));
+                }
+            }
+            if let Some(ctx) = &event.context {
+                println!("  context: {}", ctx);
+            }
+            if let Some(meta) = &event.metadata {
+                println!("  metadata: {}", meta);
+            }
+            if let Some(trace) = &event.stacktrace {
+                println!("  stacktrace:");
+                for line in trace.lines() {
+                    println!("    {}", line);
+                }
+            }
             match &event.resolved_at {
                 Some(r) => println!("  resolved_at: {}", r),
                 None => println!("  resolved_at: (unresolved)"),
             }
         }
         None => {
-            println!("Event not found: {}", event_id);
+            if json {
+                println!("null");
+            } else {
+                println!("Event not found: {}", event_id);
+            }
         }
     }
 
@@ -431,6 +486,7 @@ fn query_search(
     unresolved: bool,
     limit: usize,
     cursor: Option<String>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
@@ -451,6 +507,19 @@ fn query_search(
 
     let result = search.search(text, &filters, limit, cursor, true)?;
 
+    if json {
+        // Full structured events — nothing hidden behind the summary line
+        // below (no context/tags/stacktrace/error_code/correlation_id lost).
+        let out = serde_json::json!({
+            "items": result.items,
+            "total_estimate": result.total_estimate,
+            "next_cursor": result.next_cursor,
+            "cursor_warning": result.cursor_warning,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
     if let Some(warning) = &result.cursor_warning {
         eprintln!("warning: {}", warning);
     }
@@ -459,12 +528,28 @@ fn query_search(
         println!("No matching events.");
     }
     for event in &result.items {
-        println!("{}  [{}] {:?} :: {}", event.event_id, event.application, event.severity, event.message);
+        // Summary line stays terse for scanability; error_code + tags are
+        // appended when present since they're the highest-signal fields for
+        // triage (full detail — context/stacktrace/etc — needs --json).
+        let mut line = format!(
+            "{}  [{}] {:?} :: {}",
+            event.event_id, event.application, event.severity, event.message
+        );
+        if let Some(code) = &event.error_code {
+            line.push_str(&format!("  [{}]", code));
+        }
+        if let Some(tags) = &event.tags {
+            if !tags.is_empty() {
+                line.push_str(&format!("  #{}", tags.join(" #")));
+            }
+        }
+        println!("{}", line);
     }
     println!("\n{} match(es) (showing {})", result.total_estimate, result.items.len());
     if let Some(next) = result.next_cursor {
         println!("next cursor: {}", next);
     }
+    println!("(use --json for full context/tags/stacktrace/correlation_id)");
 
     Ok(())
 }

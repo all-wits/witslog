@@ -6,6 +6,62 @@ their own independent version numbers. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package versions independently of
 the Rust workspace (pre-1.0).
 
+## [Unreleased]
+
+### Added
+
+- **Instrumented fetch — `fetch.js`, `witslogFetch(input, init, opts)`.** Explicit wrapper
+  around `fetch` (no global monkeypatch — stays safe alongside Next.js's own fetch
+  caching/instrumentation). Automatically mints/propagates a correlation id
+  (`x-request-id` by default), times the call, and on failure captures via the same
+  `exception()`/cause-chain path below; on a non-2xx response it peeks the body via
+  `.clone()` (caller still gets the untouched response), pulls `error_code`/`message`/
+  `details` out of the `{error:{code,message,details}}` contract shape when present, and
+  logs at `warn` for 4xx / `error` for 5xx. Replaces the hand-written try/catch +
+  `witslog.exception`/`witslog.error` boilerplate a Next.js API route (or any outbound-fetch
+  call site) previously needed per call. Tests: `test/fetch.test.js`.
+- **Next.js adapter — `frameworks/next.js`.** `register(application, config)` mounts once;
+  `onRequestError(err, request, context)` is Next.js 15's official server-error hook —
+  re-export it from `instrumentation.ts` and every uncaught route/Server-Component/
+  Server-Action/middleware error is captured (method/path + Next's router context) with zero
+  per-route code; `withWitslog(handler)` wraps a single handler explicitly for Next < 15.
+  Mirrors the existing `frameworks/express.js`/`flask.py` adapter convention. Tests:
+  `test/next_adapter.test.js`.
+- **React Query client capture — `frameworks/react-query.js`, `attachWitslog(queryClient, opts)`.**
+  Subscribes to a TanStack `QueryClient`'s `MutationCache`/`QueryCache` (the same public event
+  stream TanStack Query Devtools itself observes), so every failed query/mutation — key,
+  variables, error — is captured automatically. Browser-safe: no Node built-ins, no FFI, no
+  hard `@tanstack/react-query` dependency (duck-typed against `.getMutationCache()`/
+  `.getQueryCache()`). Hands events to a `report` sink, typically the object returned by
+  `WitslogBrowser.init(...)` (`bindings/browser/witslog-browser.js`). Closes the gap where
+  client-side query/mutation failures were captured nowhere. Tests:
+  `test/react_query_adapter.test.js`.
+- **`witslogNextIngest(options)` — `frameworks/next.js`.** A Next.js Route Handler-shaped
+  ingest endpoint for the browser reporter / React Query adapter's traffic — a genuine second
+  entry point alongside `witslogBrowserIngest` (Express), not a re-export, since Express's raw
+  req/res and Next's Web Request/Response are different shapes. Both now call the same
+  guardrail/persist logic factored into new `lib/ingest-core.js`
+  (`checkIngestGuardrails`/`persistIngestBatch`), so the security guardrails can't drift
+  between transports. Tests: `test/next_ingest.test.js`.
+- **`witslogBrowserIngest` forwards a full clamped `context` object** (plus `error_code` and a
+  bounded set of extra `tags`), not just `context.url` as before — via new shared
+  `lib/clamp.js::clampContext` (bounded key count/nesting depth/string length/array length/
+  total size, collapsing to `{"_truncated":true}` if still too large). This is what lets the
+  React Query adapter's captured mutation variables/response actually reach storage instead of
+  being silently dropped at the ingest boundary. `"browser"` remains the first, unremovable tag.
+  Tests: `test/clamp.test.js`, new cases in `test/express_ingest.test.js`.
+
+### Fixed
+
+- **`exception()` dropped the JS `Error.cause` chain.** Node's own `fetch` (undici) throws
+  `TypeError: fetch failed` whose real reason (`ECONNREFUSED`/`ETIMEDOUT`/`ENOTFOUND`/etc)
+  lives on `.cause`, not the top-level error — every wrapped fetch failure logged as an
+  undiagnosable bare "fetch failed". `exception()` now walks the `.cause` chain (depth-capped),
+  appends `Caused by: ...` lines to `stacktrace`, and folds the deepest cause's code/name into
+  `context.root_cause` (not a top-level field — `root_cause` is Rust-only, not part of the
+  `witslog_log` payload contract; see `bindings/CONTRACT.md`). Regression lock:
+  `test/exception_cause_chain.test.js`.
+
 ## [0.4.1] — 2026-07-21
 
 ### Fixed

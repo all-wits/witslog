@@ -10,6 +10,14 @@
 // Logs any error passed to next(err), then forwards it to the next handler.
 
 const witslog = require('../index');
+const { clampString } = require('../lib/clamp');
+const {
+  DEFAULT_RATE_LIMIT,
+  isLoopback,
+  clampSeverity,
+  checkIngestGuardrails,
+  persistIngestBatch,
+} = require('../lib/ingest-core');
 
 function witslogErrorHandler(application = 'express') {
   return function (err, req, res, next) {
@@ -55,22 +63,6 @@ function witslogErrorHandler(application = 'express') {
 // metadata, not cryptographic origin proof. True provenance (`ingest_source`
 // in the payload contract) needs an ABI-version bump and is out of scope here.
 
-const DEFAULT_RATE_LIMIT = { windowMs: 60_000, max: 60 };
-
-function isLoopback(addr) {
-  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
-}
-
-function clampString(value, maxLen) {
-  if (typeof value !== 'string') return undefined;
-  return value.length > maxLen ? value.slice(0, maxLen) : value;
-}
-
-function clampSeverity(sev) {
-  // Untrusted input never gets to claim fatal/critical.
-  return sev === 'warn' ? 'warn' : 'error';
-}
-
 /**
  * Express handler that accepts batches from `bindings/browser/witslog-browser.js`
  * and persists them via the Node SDK. See the guardrail notes above — every
@@ -107,17 +99,6 @@ function witslogBrowserIngest(options = {}) {
 
   const buckets = new Map();
 
-  function isRateLimited(key) {
-    const now = Date.now();
-    let bucket = buckets.get(key);
-    if (!bucket || now >= bucket.resetAt) {
-      bucket = { count: 0, resetAt: now + rateLimit.windowMs };
-      buckets.set(key, bucket);
-    }
-    bucket.count += 1;
-    return bucket.count > rateLimit.max;
-  }
-
   return function (req, res, next) {
     if (req.path !== path) {
       next();
@@ -125,19 +106,11 @@ function witslogBrowserIngest(options = {}) {
     }
 
     const remote = req.socket && req.socket.remoteAddress;
-    if (remote && !isLoopback(remote)) {
-      res.status(403).end();
-      return;
-    }
-
     const origin = req.get && req.get('origin');
-    if (!origin || !allowedOrigins.includes(origin)) {
-      res.status(403).json({ error: 'origin not allowed' });
-      return;
-    }
-
-    if (isRateLimited(remote || origin)) {
-      res.status(429).json({ error: 'rate limit exceeded' });
+    const rejection = checkIngestGuardrails({ remoteAddress: remote, origin, allowedOrigins, rateLimit, buckets });
+    if (rejection) {
+      if (rejection.body === undefined) res.status(rejection.status).end();
+      else res.status(rejection.status).json(rejection.body);
       return;
     }
 
@@ -145,7 +118,11 @@ function witslogBrowserIngest(options = {}) {
     let responded = false;
     // `req.destroy()` may prevent 'end' from ever firing, so the oversize
     // response is sent immediately here rather than deferred to 'end' —
-    // deferring it would leave the client hanging with no response.
+    // deferring it would leave the client hanging with no response. This
+    // mid-stream abort is Express/raw-Node-stream-specific defense-in-depth;
+    // persistIngestBatch (lib/ingest-core.js) also enforces maxBytes as a
+    // post-buffer check, which is all a fully-buffered transport (e.g. the
+    // Next.js ingest handler in frameworks/next.js) can do.
     function respondOnce(status, jsonBody) {
       if (responded) return;
       responded = true;
@@ -163,36 +140,9 @@ function witslogBrowserIngest(options = {}) {
     });
     req.on('end', () => {
       if (responded) return;
-
-      let body;
-      try {
-        body = JSON.parse(raw);
-      } catch (_e) {
-        respondOnce(400, { error: 'invalid JSON' });
-        return;
-      }
-
-      const events = Array.isArray(body.events) ? body.events.slice(0, maxBatch) : [];
       const userAgent = clampString(req.get && req.get('user-agent'), 500);
-
-      for (const evt of events) {
-        try {
-          witslog.log(application, clampString(evt && evt.message, 2000) || 'browser error', {
-            severity: clampSeverity(evt && evt.severity),
-            exception: clampString(evt && evt.exception, 200),
-            stacktrace: clampString(evt && evt.stacktrace, 8000),
-            tags: ['browser'],
-            context: {
-              url: clampString(evt && evt.context && evt.context.url, 2000),
-              ua: userAgent,
-            },
-          });
-        } catch (_e) {
-          /* one malformed event must not break the batch or the response */
-        }
-      }
-
-      respondOnce(202);
+      const result = persistIngestBatch(raw, { application, maxBatch, maxBytes, userAgent });
+      respondOnce(result.status, result.body);
     });
   };
 }

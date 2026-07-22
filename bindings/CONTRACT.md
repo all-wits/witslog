@@ -53,6 +53,16 @@ owns (and frees, via `witslog_free_string`) any `char*` it returns.
 
 `context`, `tags`, `metadata` are passed through unchanged (FR-P6-006).
 
+**`root_cause` is not a payload field.** `witslog-core::EventBuilder::root_cause` /
+`witslog-core::exception()` populate `Event.root_cause` from Rust's `std::error::Error::source()`
+chain, but that field was never wired into the `witslog_log` JSON contract above — no SDK can set
+it as a top-level key. SDKs that unwrap a host-language cause chain (e.g. the Node SDK's
+`exception()` walking JS's `Error.cause`, for `TypeError: fetch failed` from `fetch`/undici, whose
+real reason — `ECONNREFUSED`/`ETIMEDOUT`/`ENOTFOUND`/etc — lives on `.cause`, not the top-level
+error) fold the deepest cause's code/name into **`context.root_cause`** instead, and append
+`Caused by: ...` lines to `stacktrace`. This needs no ABI change and every language SDK doing the
+same unwrap should follow the same `context.root_cause` convention for consistency.
+
 ## `witslog_init` / `witslog_configure` payload (JSON object)
 
 ```json
@@ -181,12 +191,68 @@ MCP-connected LLM). Port the Node handler's logic (see its source for the full r
 4. **Clamp severity to `error`/`warn`** (never let untrusted input claim
    `fatal`/`critical`) and cap message/stacktrace/batch/body sizes.
 5. Map each accepted event through your SDK's normal `log`/`exception` call with
-   `tags: ["browser"]` — advisory only, not a trust boundary; `classify()` merges
-   suggested tags into whatever is already there.
+   `tags: ["browser", ...]` — `"browser"` is always first and cannot be removed by the
+   client; a bounded number of additional low-cardinality tags (and `error_code`, and a
+   generically-clamped `context` object — see `clampContext` below) may pass through.
+   None of this is a trust boundary; `classify()` merges suggested tags into whatever is
+   already there, and clamping bounds *shape/size*, not the untrustworthiness of the text.
 
 True provenance (an `ingest_source` field trusted by the query layer) isn't in the
 payload contract above and would need a `WITSLOG_ABI_VERSION` bump — out of scope until
 a real need shows up.
+
+**Context passthrough (`clampContext`, `bindings/node/lib/clamp.js`).** The Node ingest
+handler originally forwarded only `context.url`, dropping everything else an event's
+`context` might carry — which meant a richer client-side capture layer (see React Query
+adapter below) had nowhere to put a mutation's variables/response. `clampContext` now
+recursively bounds an arbitrary `context` object (max key count, max nesting depth, max
+string length per leaf, max array length, max total serialized size — collapsing to
+`{"_truncated":true}` if still too large after clamping) before it is persisted, so a
+whole structured `context` survives ingest instead of just one field, without accepting
+unbounded/DoS-shaped input. Reused by `fetch.js`'s error-response body snapshot and
+`frameworks/react-query.js`'s captured mutation/query context — see below.
+
+## Node SDK auto-instrumentation (fetch / Next.js / React Query adapters)
+
+Three additions (Node-only for now — see PHASES.md / CLAUDE.md "Next Steps") remove the
+per-call-site `try/catch` + `witslog.exception`/`witslog.error` boilerplate that a plain
+route handler or fetch call previously required:
+
+- **`bindings/node/fetch.js` — `witslogFetch(input, init, opts)`.** An explicit wrapper
+  around `fetch` (no global monkeypatch — stays safe alongside Next.js's own fetch
+  caching/instrumentation). On a thrown error it logs via `exception()` (cause chain
+  included, `error_code: "UPSTREAM_UNREACHABLE"`); on a non-2xx response it peeks the body
+  via `.clone()` (caller still gets the original, unconsumed response), extracts
+  `error_code`/`message`/`details` from the `{error:{code,message,details}}` contract
+  shape when present, and logs at **`warn` for 4xx / `error` for 5xx** (expected
+  client-caused conflicts vs. real server failures — keeps fingerprinting/MTTR
+  meaningful). Always attaches/propagates a correlation id (`x-request-id` by default)
+  and `context.timing.latency_ms`.
+- **`bindings/node/frameworks/next.js` — `register`/`onRequestError`/`withWitslog`.**
+  Mirrors the `express.js`/`flask.py` adapter convention: hook the framework's own global
+  error signal. `onRequestError` re-exported from `instrumentation.ts` is Next.js 15's
+  official server-error hook — it fires for uncaught errors in route handlers, Server
+  Components, Server Actions, and middleware alike, captured with the request
+  method/path and Next's router context (`routePath`/`routeType`/`renderSource`/etc), zero
+  per-route code. `withWitslog(handler)` is the fallback for Next < 15 or a single route
+  wanting explicit timing without global instrumentation.
+- **`bindings/node/frameworks/react-query.js` — `attachWitslog(queryClient, opts)`.**
+  Subscribes to a TanStack `QueryClient`'s `MutationCache`/`QueryCache` — the same public
+  event stream TanStack Query Devtools itself observes — so every failed
+  query/mutation is captured: mutation/query key, variables, and the error, with zero
+  per-hook code. Browser-safe (no Node built-ins, no FFI, no hard `@tanstack/react-query`
+  dependency — duck-typed against `.getMutationCache()`/`.getQueryCache()`). Hands events
+  to a `report` sink — typically the object returned by `WitslogBrowser.init(...)`
+  (`bindings/browser/witslog-browser.js`), which ships them to a server-side ingest
+  endpoint (so the same guardrails 1–5 apply).
+- **`bindings/node/frameworks/next.js` — `witslogNextIngest(options)`.** A Next.js Route
+  Handler-shaped ingest endpoint (`(request: Request) => Promise<Response>`), for the
+  React Query adapter's traffic (or any `WitslogBrowser.init(...)`-shaped client). This is
+  a **separate entry point from `witslogBrowserIngest`**, not a re-export — Express's raw
+  `req`/`res` and Next's Web `Request`/`Response` are not interchangeable shapes. Both call
+  the same framework-neutral guardrail/persist logic, factored out into
+  `bindings/node/lib/ingest-core.js` (`checkIngestGuardrails`, `persistIngestBatch`) so the
+  security-relevant checks (guardrails 1–5 above) can't drift between the two transports.
 
 ## Mount / flush lifecycle
 

@@ -38,13 +38,55 @@ function info(application, message, fields = {}) {
   return log(application, message, { severity: 'info', ...fields });
 }
 
-/** Log an Error object with its stack captured. */
+/**
+ * Walk an Error's `.cause` chain (ES2022 `Error(msg, {cause})`, and the
+ * `.cause` Node's own `fetch`/undici attaches to `TypeError: fetch failed`
+ * for the real reason — ECONNREFUSED/ETIMEDOUT/ENOTFOUND/etc). Returns
+ * `{ lines, rootCause }`: `lines` are `Caused by: ...` strings to append to
+ * `stacktrace`, `rootCause` is the deepest cause's `.code` (or its
+ * name/message if no `.code`), or `undefined` if there is no cause chain.
+ * Caps depth at 10 to guard against a pathological/cyclic `.cause`.
+ */
+function unwrapCauseChain(err) {
+  const lines = [];
+  let rootCause;
+  let cur = err && err.cause;
+  let depth = 0;
+  while (cur && depth < 10) {
+    const code = cur.code;
+    const name = cur.name || (cur instanceof Error ? 'Error' : typeof cur);
+    const message = cur.message !== undefined ? cur.message : String(cur);
+    lines.push(`Caused by: ${code ? `${code} ` : ''}${name}: ${message}`);
+    rootCause = code || name;
+    cur = cur.cause;
+    depth += 1;
+  }
+  return { lines, rootCause };
+}
+
+/**
+ * Log an Error object with its stack captured, including its `.cause` chain.
+ *
+ * NOTE: `root_cause` is a Rust-only `EventBuilder` field — it is not part of
+ * the `witslog_log` C ABI JSON contract (see bindings/CONTRACT.md), so it
+ * cannot be set as a top-level payload key from any SDK. The deepest cause's
+ * code/name is instead folded into `context.root_cause`, which round-trips
+ * through the existing `context` JSON column with no ABI change.
+ */
 function exception(application, err, fields = {}) {
   const out = { severity: 'error', ...fields };
   let message = fields.message;
   if (err instanceof Error) {
     out.exception = out.exception || err.name;
-    out.stacktrace = out.stacktrace || err.stack || '';
+    let stacktrace = out.stacktrace || err.stack || '';
+    const { lines, rootCause } = unwrapCauseChain(err);
+    if (lines.length > 0) {
+      stacktrace = stacktrace ? `${stacktrace}\n${lines.join('\n')}` : lines.join('\n');
+      if (rootCause !== undefined && (!out.context || out.context.root_cause === undefined)) {
+        out.context = { ...(out.context || {}), root_cause: rootCause };
+      }
+    }
+    out.stacktrace = stacktrace;
     if (message === undefined) message = err.message || err.name;
   }
   if (message === undefined) message = 'exception';
@@ -147,4 +189,5 @@ module.exports = {
   buildPayload,
   ...errors,
   __setLibForTest,
+  __unwrapCauseChain: unwrapCauseChain,
 };

@@ -137,6 +137,67 @@ test('accepts an allowed origin and persists clamped events via the SDK', () => 
   assert.strictEqual(logged[0].context.url, 'http://localhost:5173/page');
 });
 
+test('forwards the full clamped context object (not just context.url) plus error_code and extra tags', () => {
+  // Regression lock: prior to clampContext wiring, witslogBrowserIngest only
+  // forwarded context.url — a React Query adapter's captured mutation
+  // variables/response would have been silently dropped at this boundary.
+  const logged = [];
+  witslog.__setLibForTest({ log: (json) => ((logged.push(JSON.parse(json))), 1) });
+
+  const middleware = witslogBrowserIngest({
+    force: true,
+    allowedOrigins: ['http://localhost:5173'],
+    application: 'witsnote-client',
+  });
+  const { req, res } = fakeReqRes({
+    origin: 'http://localhost:5173',
+    body: {
+      events: [
+        {
+          message: 'mutation cards.update failed',
+          severity: 'error',
+          error_code: 'CARD_VERSION_CONFLICT',
+          tags: ['react-query', 'mutation'],
+          context: {
+            url: 'http://localhost:5173/board/1',
+            mutationKey: ['cards', 'update'],
+            variables: { id: 'c1', input: { title: 'new' } },
+          },
+        },
+      ],
+    },
+  });
+
+  middleware(req, res, () => assert.fail('next() should not be called'));
+  req.__end(req.__bodyStr);
+
+  assert.strictEqual(res.statusCode, 202);
+  const event = logged[0];
+  assert.strictEqual(event.error_code, 'CARD_VERSION_CONFLICT');
+  assert.deepStrictEqual(event.tags, ['browser', 'react-query', 'mutation']);
+  assert.strictEqual(event.context.url, 'http://localhost:5173/board/1');
+  assert.deepStrictEqual(event.context.mutationKey, ['cards', 'update']);
+  assert.strictEqual(event.context.variables.input.title, 'new');
+});
+
+test('an event with no tags still gets exactly ["browser"], never an empty/missing tags array', () => {
+  const logged = [];
+  witslog.__setLibForTest({ log: (json) => ((logged.push(JSON.parse(json))), 1) });
+
+  const middleware = witslogBrowserIngest({ force: true, allowedOrigins: ['http://localhost:5173'] });
+  const { req, res } = fakeReqRes({
+    origin: 'http://localhost:5173',
+    body: { events: [{ message: 'x', tags: ['not-a-string', 123, null] }] },
+  });
+
+  middleware(req, res, () => assert.fail('next() should not be called'));
+  req.__end(req.__bodyStr);
+
+  // Non-string tag entries are filtered; 'not-a-string' IS a string so it
+  // survives (filter only rejects non-string types, not the literal value).
+  assert.deepStrictEqual(logged[0].tags, ['browser', 'not-a-string']);
+});
+
 test('rate limit rejects requests past the configured max', () => {
   witslog.__setLibForTest({ log: () => 1 });
 

@@ -51,7 +51,9 @@ witslog.error('myapp', 'db timeout', { context: { request_id: 'r1' }, tags: ['db
 try {
   risky();
 } catch (e) {
-  witslog.exception('myapp', e);      // captures err.stack
+  witslog.exception('myapp', e);      // captures err.stack (and, if e.cause is set —
+                                       // e.g. Node's own fetch() failures — the full
+                                       // cause chain, folded into stacktrace + context.root_cause)
 }
 ```
 
@@ -126,6 +128,81 @@ app.use(witslogBrowserIngest({
 > [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md) for the
 > Python/PHP ingest recipe and the full guardrail rationale.
 
+## 🧵 Zero-boilerplate auto-instrumentation
+
+Mount instrumentation once instead of hand-writing `try/catch` +
+`witslog.exception`/`witslog.error` at every route handler and outbound `fetch` call.
+
+### Instrumented fetch — `witslogFetch`
+
+Explicit wrapper around `fetch` (no global monkeypatch — safe alongside Next.js's own fetch
+caching/instrumentation). Swap it in at your outbound-request choke points:
+
+```js
+const { witslogFetch } = require('@all-wits/witslog/fetch');
+
+const res = await witslogFetch(upstreamUrl, init, {
+  application: 'my-proxy',
+  tags: ['proxy'],
+  context: { path: '/cards/123' },
+});
+```
+
+Auto-captures a correlation id (`x-request-id` by default, propagated to the outbound
+request), `context.timing.latency_ms`, and on failure:
+
+- **Thrown error** (network unreachable/timeout) — logs via `exception()` (full `.cause`
+  chain, `error_code: 'UPSTREAM_UNREACHABLE'`), then rethrows the original error unchanged.
+- **Non-2xx response** — peeks the body via `.clone()` (your code still gets the untouched
+  `Response`), extracts `error_code`/`message`/`details` from a `{error:{code,message,details}}`
+  body when present, and logs at **`warn` for 4xx** (expected client-caused conflicts) /
+  **`error` for 5xx**.
+
+### Next.js adapter
+
+```ts
+// instrumentation.ts — Next.js's own server-boot hook. Captures every uncaught error in
+// route handlers, Server Components, Server Actions, and middleware — zero per-route code.
+import { register as registerWitslog, onRequestError as witslogOnRequestError } from '@all-wits/witslog/frameworks/next';
+
+export function register() {
+  registerWitslog('my-app', { createProject: true });
+}
+export const onRequestError = witslogOnRequestError;
+```
+
+`withWitslog(handler, opts?)` wraps a single route handler explicitly, for Next < 15 or when
+you want per-route timing/correlation without global instrumentation.
+
+`witslogNextIngest(options)` is the Next.js Route Handler-shaped equivalent of
+`witslogBrowserIngest` above (Express's raw `req`/`res` and Next's Web `Request`/`Response`
+aren't interchangeable, so this is a separate export, not a re-export — same guardrails):
+
+```ts
+// app/api/__witslog/route.ts
+import { witslogNextIngest } from '@all-wits/witslog/frameworks/next';
+export const POST = witslogNextIngest({ allowedOrigins: ['https://your-app.example'] });
+```
+
+### React Query client capture
+
+Subscribes to a TanStack `QueryClient`'s `MutationCache`/`QueryCache` — the same event
+stream TanStack Query Devtools itself observes — so every failed query/mutation (key,
+variables, error) is captured with zero per-hook code. Browser-safe, no hard
+`@tanstack/react-query` dependency.
+
+```js
+import { attachWitslog } from '@all-wits/witslog/frameworks/react-query';
+
+// `report` is any {enqueue(event)} sink — typically WitslogBrowser.init(...)
+// from bindings/browser/witslog-browser.js, which ships events to witslogNextIngest/witslogBrowserIngest
+attachWitslog(queryClient, { report: myBrowserReporter, tags: ['my-app'] });
+```
+
+See [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md#node-sdk-auto-instrumentation-fetch-nextjs-react-query-adapters)
+for the full design (including the `context.root_cause` convention `exception()`/`witslogFetch`
+use, and how `clampContext` bounds what an ingest endpoint accepts).
+
 ## 🧱 Works with your Node.js stack
 
 `@all-wits/witslog` is a plain npm/pnpm/bun package with no bundler-specific glue — it works
@@ -167,8 +244,17 @@ in **any Node.js process**, which covers the server side of most modern framewor
 | `init(config?)` | Mount the SDK; pass `{ createProject: true }` to scaffold `.witslog/` first, plus optional enrich/redact/buffer config (see [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md)). |
 | `error/warn/info(app, message, opts?)` | Log at the given severity. `opts`: `context`, `tags`, `metadata`, `error_code`, `exception`, `stacktrace`, `correlation_id`, `parent_event_id`, `category`, `version`, `environment`. |
 | `log(app, message, opts?)` | Same as `error`, explicit severity via `opts.severity`. |
-| `exception(app, err, opts?)` | Log a caught `Error`, capturing `err.stack`. |
+| `exception(app, err, opts?)` | Log a caught `Error`, capturing `err.stack` and, when set, `err.cause`'s full chain (folded into `stacktrace` + `context.root_cause`). |
 | `flush()` / `shutdown()` | Drain buffered events before exit. |
+
+### Auto-instrumentation (see [above](#-zero-boilerplate-auto-instrumentation))
+
+| Import | Function | Description |
+|--------|----------|--------------|
+| `@all-wits/witslog/fetch` | `witslogFetch(input, init, opts?)` | Instrumented `fetch` wrapper. |
+| `@all-wits/witslog/frameworks/next` | `register(app, config?)` / `onRequestError(err, req, ctx)` / `withWitslog(handler, opts?)` | Next.js server-error capture. |
+| `@all-wits/witslog/frameworks/next` | `witslogNextIngest(options)` | Browser-ingest endpoint, Next.js Route Handler shape. |
+| `@all-wits/witslog/frameworks/react-query` | `attachWitslog(queryClient, opts)` | Global React Query mutation/query failure capture. |
 
 ## 🌍 Platform support
 

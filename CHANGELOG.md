@@ -7,6 +7,46 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Added
+
+- **Zero-boilerplate auto-instrumentation for the Node SDK** (`@all-wits/witslog` 0.5.0),
+  closing the gap where every route handler/outbound fetch call needed its own hand-written
+  `try/catch` + `witslog.exception`/`witslog.error`, and client-side (React Query)
+  failures were captured nowhere:
+  - `bindings/node/fetch.js` — `witslogFetch(input, init, opts)`, an explicit instrumented
+    `fetch` wrapper (correlation id, latency, cause-chain-aware error capture, non-2xx body
+    snapshot, `warn` for expected 4xx / `error` for 5xx). Swap it in at an app's outbound-request
+    choke points instead of hand-logging each call site.
+  - `bindings/node/frameworks/next.js` — Next.js adapter (`register`, `onRequestError`,
+    `withWitslog`), mirroring the existing `frameworks/express.js`/`flask.py` convention:
+    hook the framework's own global error signal instead of per-route code.
+  - `bindings/node/frameworks/react-query.js` — `attachWitslog(queryClient, opts)` subscribes
+    to a TanStack `QueryClient`'s `MutationCache`/`QueryCache` (the same event stream TanStack
+    Query Devtools itself observes) so every failed query/mutation — key, variables, error —
+    is captured with zero per-hook code. Browser-safe, no hard `@tanstack/react-query` dep.
+  - `exception()` (`bindings/node/index.js`) now unwraps a JS `Error.cause` chain (e.g. the real
+    `ECONNREFUSED`/`ETIMEDOUT`/etc reason Node's `fetch`/undici attaches to `TypeError: fetch
+    failed`) into `stacktrace` + `context.root_cause` — previously discarded entirely. `root_cause`
+    is a Rust-only `EventBuilder` field with no `witslog_log` payload key (documented in
+    `bindings/CONTRACT.md`), hence `context.root_cause` rather than a top-level field.
+  - `witslogBrowserIngest` (`frameworks/express.js`) now forwards a whole clamped `context`
+    object plus `error_code` and a bounded set of extra `tags`, via new shared
+    `bindings/node/lib/clamp.js::clampContext` — previously only `context.url` survived
+    ingest, silently dropping anything a richer client-side capture layer (like the React
+    Query adapter above) tried to send.
+  - See `bindings/CONTRACT.md` ("Node SDK auto-instrumentation" + the `root_cause`/
+    `clampContext` notes) for the full design and rationale.
+
+- **`witslog get`/`query` no longer hide captured `context`/`tags`/`stacktrace`/`error_code`/
+  `correlation_id`**: `query`'s summary line previously printed only
+  `id [app] Severity :: message`, and even `get <id>`'s "detail" view dropped everything but a
+  handful of top-level fields — so a richly-captured event (see above) still looked bare from
+  the CLI. `get` now also prints `error_code`/`exception`/`correlation_id`/`parent_event_id`/
+  `environment`/`version`/`tags`/`context`/`metadata`/`stacktrace` when present; `query`'s
+  summary line appends `error_code`/`tags` when present; both commands gained a global
+  `--json` flag emitting the full structured event(s) (`witslog-cli/src/main.rs`). Regression
+  tests: `crates/witslog-cli/tests/p11_json_output.rs`.
+
 ### Fixed
 
 - **Node SDK (`@all-wits/witslog`) undocumented under Next.js bundling**: `witslog.init()` in a

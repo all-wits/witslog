@@ -1,6 +1,6 @@
 {
   "name": "@all-wits/witslog",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Framework-agnostic Node.js SDK for witslog structured error logging",
   "license": "Apache-2.0",
   "author": "witslog team",
@@ -17,6 +17,8 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "fetch.js",
+    "fetch.d.ts",
     "CHANGELOG.md",
     "lib/",
     "frameworks/",

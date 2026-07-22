@@ -89,6 +89,8 @@ witslog log app "connection timeout" --error-code ETIMEDOUT --severity error
 ```bash
 witslog query "timeout*" --severity error
 witslog query --unresolved          # unresolved backlog only
+witslog get <event_id> --json        # full structured event, not just the summary line
+witslog query "timeout*" --json      # same, for a whole result set
 witslog resolve <event_id>          # mark resolved (idempotent; --force to override)
 witslog stats
 witslog stats --mttr                # fingerprint-level mean time-to-resolution
@@ -140,6 +142,35 @@ to `error`/`warn` — the endpoint accepts untrusted text that lands in `events.
 MCP serves verbatim to an AI assistant. See [bindings/browser](bindings/browser) and the
 "Browser-side error capture" section of [bindings/CONTRACT.md](bindings/CONTRACT.md).
 
+### Zero-boilerplate auto-instrumentation (Node)
+
+Instead of hand-writing `try/catch` + `witslog.exception`/`witslog.error` at every route
+handler and outbound `fetch` call, mount instrumentation once:
+
+```js
+// instrumentation.ts (Next.js) — captures every uncaught route/Server-Component/
+// Server-Action/middleware error with zero per-route code
+export { register, onRequestError } from '@all-wits/witslog/frameworks/next';
+```
+
+```js
+// swap fetch(...) for witslogFetch(...) at your outbound-request choke points —
+// captures cause chains (e.g. the real ECONNREFUSED behind "fetch failed"),
+// correlation id, latency, and non-2xx response bodies automatically
+import { witslogFetch } from '@all-wits/witslog/fetch';
+const res = await witslogFetch(upstreamUrl, init, { application: 'my-proxy' });
+```
+
+```js
+// providers.tsx — captures every failed React Query mutation/query (key, variables,
+// error), the same event stream TanStack Query Devtools itself observes
+import { attachWitslog } from '@all-wits/witslog/frameworks/react-query';
+attachWitslog(queryClient, { report: myBrowserReporter });
+```
+
+See [bindings/CONTRACT.md](bindings/CONTRACT.md#node-sdk-auto-instrumentation-fetch-nextjs-react-query-adapters)
+and the [Node SDK README](bindings/node/README.md) for the full API.
+
 ## 🧭 Status
 
 Pre-1.0. Core logging, storage, taxonomy, search, MCP server, SDKs, perf hardening,
@@ -152,7 +183,7 @@ extensibility/security, and MTTR/notifiers/browser capture are shipped and teste
 | P1 | Enrichment, redaction, async buffering | ✅ |
 | P2 | Taxonomy engine (auto-classify) | ✅ |
 | P3 | FTS5 + query engine (search/aggregates/correlation) | ✅ |
-| P4 | CLI utilities (export/import/prune/archive/backup/...) | 🟡 missing global `--json` |
+| P4 | CLI utilities (export/import/prune/archive/backup/..., global `--json`) | ✅ |
 | P5 | MCP server (13 tools, JSON-RPC/stdio) | ✅ |
 | P6 | SDK bindings (Node/Python/PHP + framework adapters) | ✅ |
 | P7 | Perf benches + concurrency hardening | ✅ |
