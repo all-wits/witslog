@@ -7,6 +7,15 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP server rejected the standard `initialize` handshake** (`crates/witslog-mcp/src/server.rs`):
+  `dispatch` only handled `tools/list`/`tools/call`, so any MCP client that sends
+  `initialize` first (per the MCP handshake — most do, including Claude Desktop) got
+  `-32601 Method not found` before ever reaching `tools/list`. Added an `"initialize"` arm
+  returning `{protocolVersion, capabilities: {tools: {}}, serverInfo: {name, version}}`
+  (`version` from `env!("CARGO_PKG_VERSION")`). No schema/ABI change — JSON-RPC surface only.
+
 ### Added
 
 - **Browser reporter captures `console.error`/`console.warn` + resource-load failures**

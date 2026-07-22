@@ -134,6 +134,8 @@ tests before it's called done** — not just "it compiles" or "it looks right by
 
 ## Gotchas
 
+- **Local-verify node-sdk before bumping/publishing**: before bumping `bindings/node/package.json` version, dry-run it — copy a fresh `cargo build --release` `witslog.exe`/`witslog_ffi.dll` (or `.dylib`/`.so`) into `bindings/node/_bin/<platform>-<arch>/` + `_libs/<platform>-<arch>/` (dir naming from `platformDir()` in `bindings/node/lib/ffi.js`, e.g. `win32-x64`), then `pnpm pack` and `pnpm install <tgz>` into a scratch project. Confirms the tarball's file list is right, the bundled CLI binary runs (`witslog --version`, `witslog init`), and `serve-mcp --stdio` answers real JSON-RPC (e.g. `initialize`) before spending a real npm publish on it. On pnpm 9+ the scratch install needs one `pnpm approve-builds koffi` (native postinstall blocked by default) — not a package bug. `_bin/`/`_libs/` are git-ignored local build output, safe to leave staged or delete after.
+
 - **Fingerprint is deterministic**: same message+exception+stack_norm+category always produces same hash. Used for dedup.
 - **Migrations are idempotent**: re-running `migrate()` is safe — all `INSERT OR IGNORE`, guards on table existence.
 - **Builder methods mutate `self`**: fluent chain always legal; `build()` consumes builder.

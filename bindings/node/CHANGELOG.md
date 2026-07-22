@@ -6,7 +6,15 @@ their own independent version numbers. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package versions independently of
 the Rust workspace (pre-1.0).
 
-## [Unreleased]
+## [0.6.2] — 2026-07-22
+
+### Fixed
+
+- **Bundled CLI's `serve-mcp --stdio` rejected the `initialize` handshake.** Rust-side fix
+  (`crates/witslog-mcp/src/server.rs`) — MCP clients that send `initialize` before
+  `tools/list` (most do, including Claude Desktop) got `-32601 Method not found`. Ships to
+  npm consumers via the version bump + bundled `_bin/<platform>/witslog` binary; no SDK
+  JS/TS API changed. See the root `CHANGELOG.md` for details.
 
 ### Added
 
