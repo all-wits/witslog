@@ -82,12 +82,23 @@ fn dispatch(
     method: &str,
     params: Option<Value>,
 ) -> crate::error::Result<Value> {
-    let registry = ToolRegistry::new(db)
-        .with_allow_write(config.allow_write)
-        .with_attached(config.attached.clone());
-
     match method {
+        "initialize" => {
+            Ok(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {}
+                },
+                "serverInfo": {
+                    "name": "witslog",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }))
+        }
         "tools/list" => {
+            let registry = ToolRegistry::new(db)
+                .with_allow_write(config.allow_write)
+                .with_attached(config.attached.clone());
             let tools: Vec<Value> = registry
                 .list_tools()
                 .into_iter()
@@ -102,6 +113,9 @@ fn dispatch(
             Ok(json!({"tools": tools}))
         }
         "tools/call" => {
+            let registry = ToolRegistry::new(db)
+                .with_allow_write(config.allow_write)
+                .with_attached(config.attached.clone());
             let params = params.unwrap_or(Value::Null);
             let name = params
                 .get("name")
