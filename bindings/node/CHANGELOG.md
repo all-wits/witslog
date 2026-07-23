@@ -6,6 +6,27 @@ their own independent version numbers. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package versions independently of
 the Rust workspace (pre-1.0).
 
+## [0.6.4] — 2026-07-23
+
+### Fixed
+
+- **`witslog_delete`/CLI `delete --force --resolved-before <ts>` silently skipped
+  unresolved events.** Rust-side fix (`crates/witslog-store/src/writer.rs::delete_resolved`)
+  — `force` only relaxed the base `resolved_at IS NOT NULL` requirement, but the
+  separate `resolved_before` clause (`resolved_at <= ?`) still ran unconditionally, and
+  SQL `NULL <= x` evaluates to unknown/false — so unresolved rows (`resolved_at IS
+  NULL`) were silently excluded even under `force`, contrary to what `force` implies.
+  `force` now also widens that clause to `(resolved_at IS NULL OR resolved_at <= ?)`.
+  Ships to npm consumers via the version bump + the binary `_bin/<platform>/witslog`
+  this package bundles; no SDK JS/TS API changed. See the root `CHANGELOG.md` for
+  details.
+- **Bundled CLI's `delete --dry-run` didn't actually preview anything** — it echoed the
+  raw filter back without ever querying the DB, so the message looked identical whether
+  0 or 1000 rows would be deleted (and masked the fix above during live testing). Now
+  runs the same matching query a real delete would (via new `EventWriter::preview_delete`
+  in `crates/witslog-store`) and prints the real `would delete N event(s)` count + ids.
+  Same shipping mechanism as above (binary-only fix, no SDK JS/TS API changed).
+
 ## [0.6.3] — 2026-07-23
 
 ### Added

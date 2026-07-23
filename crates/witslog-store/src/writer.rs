@@ -157,41 +157,7 @@ impl<'a> EventWriter<'a> {
 
     pub fn delete_resolved(&self, filter: &DeleteFilter) -> Result<Vec<String>> {
         let conn = self.conn.conn();
-
-        let mut clauses: Vec<String> = vec!["resolved_at IS NOT NULL".to_string()];
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-        if filter.force {
-            clauses[0] = "1=1".to_string();
-        }
-
-        if let Some(event_id) = &filter.event_id {
-            clauses.push(format!("event_id = ?{}", params.len() + 1));
-            params.push(Box::new(event_id.clone()));
-        }
-
-        if let Some(fingerprint) = &filter.fingerprint {
-            clauses.push(format!("fingerprint = ?{}", params.len() + 1));
-            params.push(Box::new(fingerprint.clone()));
-        }
-
-        if let Some(resolved_before) = &filter.resolved_before {
-            clauses.push(format!("resolved_at <= ?{}", params.len() + 1));
-            params.push(Box::new(resolved_before.clone()));
-        }
-
-        let sql = format!(
-            "SELECT event_id FROM events WHERE {}",
-            clauses.join(" AND ")
-        );
-
-        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
-        let ids: Vec<String> = {
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(param_refs.as_slice(), |row| row.get::<_, String>(0))?;
-            rows.collect::<rusqlite::Result<Vec<String>>>()?
-        };
+        let ids = matching_delete_ids(&conn, filter)?;
 
         if ids.is_empty() {
             return Ok(ids);
@@ -202,6 +168,14 @@ impl<'a> EventWriter<'a> {
         Ok(ids)
     }
 
+    /// Same matching logic as `delete_resolved`, without deleting anything —
+    /// for a real `--dry-run` preview (event_ids that *would* be deleted),
+    /// as opposed to just echoing the filter back unevaluated.
+    pub fn preview_delete(&self, filter: &DeleteFilter) -> Result<Vec<String>> {
+        let conn = self.conn.conn();
+        matching_delete_ids(&conn, filter)
+    }
+
     /// Deletes events by id, same tombstone-then-delete path as
     /// `delete_resolved`. Used by `prune`/`archive` so every row-removal path
     /// in the codebase keeps the audit chain bridgeable (FR-P10-001) — see
@@ -210,6 +184,58 @@ impl<'a> EventWriter<'a> {
         let conn = self.conn.conn();
         delete_events_by_id(&conn, event_ids)
     }
+}
+
+/// Builds and runs the `SELECT event_id` half of `delete_resolved`/`preview_delete` —
+/// shared so a dry-run preview can never drift from what a real delete would match.
+fn matching_delete_ids(conn: &rusqlite::Connection, filter: &DeleteFilter) -> Result<Vec<String>> {
+    let mut clauses: Vec<String> = vec!["resolved_at IS NOT NULL".to_string()];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if filter.force {
+        clauses[0] = "1=1".to_string();
+    }
+
+    if let Some(event_id) = &filter.event_id {
+        clauses.push(format!("event_id = ?{}", params.len() + 1));
+        params.push(Box::new(event_id.clone()));
+    }
+
+    if let Some(fingerprint) = &filter.fingerprint {
+        clauses.push(format!("fingerprint = ?{}", params.len() + 1));
+        params.push(Box::new(fingerprint.clone()));
+    }
+
+    if let Some(resolved_before) = &filter.resolved_before {
+        // Under `force`, `resolved_at IS NULL` (unresolved) rows must also
+        // be eligible — otherwise `resolved_at <= ?` alone evaluates to
+        // SQL NULL (neither true nor false) for every unresolved row,
+        // silently excluding them even though `force` says "delete
+        // regardless of resolution state". Without `force`, the first
+        // clause already requires `resolved_at IS NOT NULL`, so this
+        // widening never applies to the non-forced path.
+        let clause = if filter.force {
+            format!(
+                "(resolved_at IS NULL OR resolved_at <= ?{})",
+                params.len() + 1
+            )
+        } else {
+            format!("resolved_at <= ?{}", params.len() + 1)
+        };
+        clauses.push(clause);
+        params.push(Box::new(resolved_before.clone()));
+    }
+
+    let sql = format!(
+        "SELECT event_id FROM events WHERE {}",
+        clauses.join(" AND ")
+    );
+
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(param_refs.as_slice(), |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
 }
 
 /// Records a tombstone (the row's `audit_hash` at time of deletion) for each
@@ -451,4 +477,108 @@ pub struct DeleteFilter {
     pub fingerprint: Option<String>,
     pub resolved_before: Option<String>,
     pub force: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use witslog_core::{EventBuilder, Severity};
+
+    fn fresh_db() -> DbConnection {
+        let db = DbConnection::open(":memory:").unwrap();
+        db.migrate().unwrap();
+        db
+    }
+
+    /// Regression lock: `--force --resolved-before <ts>` must delete
+    /// unresolved (`resolved_at IS NULL`) events too — force means "ignore
+    /// resolution state entirely", not "still silently skip NULL resolved_at
+    /// rows because `NULL <= ts` is SQL-unknown". Before the fix, this left
+    /// every unresolved row un-deletable via `resolved_before` + `force`,
+    /// even though `force` with no `resolved_before` at all did delete them.
+    #[test]
+    fn force_with_resolved_before_deletes_unresolved_rows_too() {
+        let db = fresh_db();
+        let writer = EventWriter::new(&db);
+
+        let unresolved = EventBuilder::new("app", "still broken").severity(Severity::Error).build();
+        writer.write(&unresolved).unwrap();
+
+        let resolved = EventBuilder::new("app", "fixed already").severity(Severity::Error).build();
+        writer.write(&resolved).unwrap();
+        writer.mark_resolved(&resolved.event_id, false).unwrap();
+
+        let deleted = writer
+            .delete_resolved(&DeleteFilter {
+                resolved_before: Some("2100-01-01T00:00:00Z".to_string()),
+                force: true,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(deleted.len(), 2, "force + resolved_before must delete both resolved and unresolved rows");
+        assert!(deleted.contains(&unresolved.event_id));
+        assert!(deleted.contains(&resolved.event_id));
+    }
+
+    /// Without `force`, `resolved_before` must still only ever touch resolved
+    /// rows — the widening above must not leak into the non-forced path.
+    #[test]
+    fn resolved_before_without_force_still_skips_unresolved_rows() {
+        let db = fresh_db();
+        let writer = EventWriter::new(&db);
+
+        let unresolved = EventBuilder::new("app", "still broken").severity(Severity::Error).build();
+        writer.write(&unresolved).unwrap();
+
+        let resolved = EventBuilder::new("app", "fixed already").severity(Severity::Error).build();
+        writer.write(&resolved).unwrap();
+        writer.mark_resolved(&resolved.event_id, false).unwrap();
+
+        let deleted = writer
+            .delete_resolved(&DeleteFilter {
+                resolved_before: Some("2100-01-01T00:00:00Z".to_string()),
+                force: false,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(deleted, vec![resolved.event_id]);
+    }
+
+    /// Regression lock: `preview_delete` must match exactly what `delete_resolved`
+    /// would delete (same rows, no mutation) — previously the CLI's `--dry-run`
+    /// didn't query the DB at all, just echoed the filter back unevaluated, so a
+    /// dry run looked identical whether 0 or 1000 rows would actually be hit.
+    #[test]
+    fn preview_delete_matches_what_delete_resolved_would_delete_without_mutating() {
+        let db = fresh_db();
+        let writer = EventWriter::new(&db);
+
+        let unresolved = EventBuilder::new("app", "still broken").severity(Severity::Error).build();
+        writer.write(&unresolved).unwrap();
+
+        let resolved = EventBuilder::new("app", "fixed already").severity(Severity::Error).build();
+        writer.write(&resolved).unwrap();
+        writer.mark_resolved(&resolved.event_id, false).unwrap();
+
+        let filter = DeleteFilter {
+            resolved_before: Some("2100-01-01T00:00:00Z".to_string()),
+            force: true,
+            ..Default::default()
+        };
+
+        let mut previewed = writer.preview_delete(&filter).unwrap();
+        previewed.sort();
+
+        // Nothing must have been deleted by the preview.
+        assert_eq!(previewed.len(), 2);
+        assert!(writer.query_by_id(&unresolved.event_id).unwrap().is_some());
+        assert!(writer.query_by_id(&resolved.event_id).unwrap().is_some());
+
+        let mut actually_deleted = writer.delete_resolved(&filter).unwrap();
+        actually_deleted.sort();
+
+        assert_eq!(previewed, actually_deleted, "preview must match the real delete exactly");
+    }
 }

@@ -627,10 +627,18 @@ fn delete_events(
     };
 
     if dry_run {
-        println!("(dry run — no rows deleted; re-run without --dry-run to apply)");
-        // dry_run preview reuses the same filter but never mutates: delete_resolved
-        // itself performs the delete, so a true dry-run just prints the intended filter.
+        // Actually runs the same SELECT `delete_resolved` would, so the count/ids
+        // shown are real — previously this just echoed the filter back unevaluated,
+        // which looked identical whether 0 or 1000 rows would have matched.
+        let would_delete_ids = writer.preview_delete(&filter)?;
+        println!(
+            "(dry run — no rows deleted; re-run without --dry-run to apply)"
+        );
         println!("  filter: {:?}", filter);
+        println!("  would delete {} event(s)", would_delete_ids.len());
+        for id in &would_delete_ids {
+            println!("  {}", id);
+        }
         return Ok(());
     }
 

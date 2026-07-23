@@ -7,6 +7,42 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`delete --force --resolved-before <ts>` (CLI) / `witslog_delete` (MCP) silently
+  skipped unresolved events** (`crates/witslog-store/src/writer.rs::delete_resolved`):
+  `force` only relaxed the base `resolved_at IS NOT NULL` requirement to `1=1`, but the
+  separate `resolved_before` clause (`resolved_at <= ?`) still applied unconditionally
+  regardless of `force`, and SQL `NULL <= x` evaluates to unknown (never true) — so
+  every unresolved row (`resolved_at IS NULL`) was silently excluded even under
+  `force`, contrary to what `force` is supposed to mean ("delete regardless of
+  resolution state"). Confirmed live: `witslog delete --resolved-before <ts> --force`
+  reported "Deleted 0 event(s)" against a DB of entirely unresolved events. Fixed by
+  widening the `resolved_before` clause to `(resolved_at IS NULL OR resolved_at <= ?)`
+  when `force:true`; the non-forced path is unchanged (still requires
+  `resolved_at IS NOT NULL` first, so this widening never applies there). Regression
+  tests: `crates/witslog-store/src/writer.rs::tests`
+  (`force_with_resolved_before_deletes_unresolved_rows_too`,
+  `resolved_before_without_force_still_skips_unresolved_rows`).
+
+- **CLI `delete --dry-run` didn't actually preview anything** (`crates/witslog-cli/src/main.rs::delete_events`):
+  it printed a generic `"(dry run — no rows deleted; re-run without --dry-run to apply)"`
+  message plus the raw `DeleteFilter` debug string, then returned — without ever running
+  the `SELECT` a real delete would. The message looked identical whether 0 or 1000 rows
+  would actually be hit, which masked the `resolved_before`/`force` bug above during live
+  testing (a user ran `--dry-run`, saw the same reassuring-looking message either way, and
+  couldn't tell anything was wrong). Fixed by extracting the shared matching logic from
+  `EventWriter::delete_resolved` into a new `matching_delete_ids` helper
+  (`crates/witslog-store/src/writer.rs`) and a new `EventWriter::preview_delete` that runs
+  it read-only; the CLI's `--dry-run` path now calls `preview_delete` and prints the real
+  `would delete N event(s)` count plus every matched id — the exact same rows a real delete
+  would remove, guaranteed by sharing one query-building function instead of two
+  copies that could drift. The MCP `witslog_delete` tool's `dry_run` already worked this way
+  (`deleted_count`/`would_delete_count` in `registry.rs`); this brings the CLI in line.
+  Confirmed live against a real 85-event WitsNote DB: dry-run now correctly previews and
+  lists all 85 ids, and the real delete removes exactly those 85. Regression test:
+  `crates/witslog-store/src/writer.rs::tests::preview_delete_matches_what_delete_resolved_would_delete_without_mutating`.
+
 ## [0.1.6] — 2026-07-23
 
 ### Added

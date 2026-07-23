@@ -1,6 +1,6 @@
 {
   "name": "@all-wits/witslog",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Framework-agnostic Node.js SDK for witslog structured error logging",
   "license": "Apache-2.0",
   "author": "witslog team",
@@ -11,6 +11,25 @@
   },
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./fetch": {
+      "types": "./fetch.d.ts",
+      "default": "./fetch.js"
+    },
+    "./browser": {
+      "types": "./browser.d.ts",
+      "default": "./browser.js"
+    },
+    "./frameworks/*": {
+      "types": "./frameworks/*.d.ts",
+      "default": "./frameworks/*.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "witslog": "bin/witslog.js"
   },
