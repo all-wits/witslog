@@ -88,7 +88,7 @@ same unwrap should follow the same `context.root_cause` convention for consisten
               "git_commit": true, "env_allowlist": ["PATH"] },
   "redact": { "custom_patterns": ["MY_TOKEN_[A-Z0-9]+"] },
   "buffer": { "enabled": false, "batch_size": 50, "flush_interval_ms": 1000,
-              "queue_capacity": 10000 }
+              "queue_capacity": 1024 }
 }
 ```
 
@@ -113,7 +113,7 @@ only, not missing parent directories. Historically only the separately-distribut
 call in a fresh project. Safe to call repeatedly (dir creation and the underlying
 `Store::open_or_create` migrate step are both idempotent).
 
-Currently only the [Node SDK](node) wires this into a convenience API
+Currently only the [Node SDK](https://github.com/all-wits/witslog/blob/main/bindings/node) wires this into a convenience API
 (`init({ createProject: true })` / `{ createProject: '/path' }`). Python/PHP can call the
 native symbol directly through their FFI/ctypes/ext-ffi bridge but don't expose a wrapper
 yet — see each SDK's README.
@@ -139,7 +139,7 @@ they're `require()`d natively instead of bundled, e.g. in Next.js:
 `serverExternalPackages: ["@all-wits/witslog", "koffi"]`. Without it, `koffi`'s loader throws
 `"Cannot find the native Koffi module; did you bundle it correctly?"` at load time — this is a
 `koffi`-internal failure, not a witslog `_libs/` locator failure, and no witslog code change can
-fix it. See [bindings/node/README.md](node/README.md#-works-with-your-nodejs-stack).
+fix it. See [bindings/node/README.md](https://github.com/all-wits/witslog/blob/main/bindings/node/README.md#-works-with-your-nodejs-stack).
 
 ## CLI binary location (Node SDK only, `bindings/node/lib/cli-locator.js`)
 
@@ -327,12 +327,61 @@ mutation/query lifecycle:
   a standard `CloseEvent` with `.code`/`.reason`/`.wasClean`). Logs only "abnormal" closes
   (`event.code` not `1000`/`1001`) with `error_code: WS_CLOSE_<code>`,
   `context.ws: {code, reason, wasClean}`, `tags: ['network', 'websocket', ...opts.tags]`.
+- **`bindings/node/frameworks/hocuspocus.js` — `attachWitslogHocuspocus(provider, opts)`.**
+  Node-side counterpart to `witslog-websocket.js`, purpose-built for a `HocuspocusProvider`
+  (or any `EventEmitter`-shaped target exposing `on(event, fn)`/`off(event, fn)`) rather than
+  a raw `CloseEvent` hook. Two differences from the vendored watcher above:
+  `isAbnormalClose(code, wasClean)` treats any `wasClean:true` close as normal — the vendored
+  watcher checks `code` alone, so a clean disconnect that synthesizes code 1005 ("No Status
+  Rcvd", which the browser does locally whenever the server closes without an explicit
+  status — a routine `provider.destroy()`/tab-nav/HMR reload) is misclassified as abnormal;
+  and it additionally captures `authenticationFailed` (`error_code: COLLAB_AUTH_FAILED`). Same
+  urgency posture as `witslogWebSocketWatch`: flushes the reporter immediately after every
+  `emit()`. Returns a `detach()` cleanup function that removes all three listeners
+  (`close`/`disconnect`/`authenticationFailed`).
 - **`buildBatch`/`makeErrorEvent` (`bindings/browser/witslog-browser.js`) and
   `persistIngestBatch` (`bindings/node/lib/ingest-core.js`) now forward `error_code` /
   `correlation_id` / `tags`** from a captured browser event through to the ingest payload
   and on into `witslog.log` — previously only `message`/`severity`/`exception`/`stacktrace`/
   `context.url` survived the browser→ingest hop, silently dropping the correlation id a
   richer capture layer (React Query adapter, WebSocket watch) now always sets.
+
+## Node SDK framework-adapter contract (`bindings/node/frameworks/*.js`)
+
+Not an ABI/wire contract — this is the shape every `frameworks/*.js` adapter (`axios.js`,
+`express.js`, `react-query.js`, `next.js`, `hocuspocus.js`, …) follows, so a consuming app gets
+"import + one function call" instead of hand-rolling capture logic per integration (the
+`witslog-websocket.ts` boilerplate in an early WitsNote integration, later replaced by
+`hocuspocus.js`, is the cautionary example this contract exists to prevent recurring). A new
+adapter for another runtime/framework/infra (Redis pub/sub, BroadcastChannel, socket.io, a queue
+consumer, …) MUST follow all five:
+
+1. **Duck-typed against the target's public API — no hard dependency on the target framework
+   package.** `react-query.js` only assumes `.getMutationCache()/.getQueryCache().subscribe()`;
+   `hocuspocus.js` only assumes `.on(event, fn)/.off(event, fn)` (the public `EventEmitter`
+   surface `HocuspocusProvider` happens to expose). Never `require()` the target package itself.
+2. **`opts.report` resolved via a local `resolveEmit(report)` helper**: accepts a function
+   `(event) => void` or a `{enqueue(event)}`-shaped reporter (e.g. the object
+   `bindings/browser/witslog-browser.js`'s `WitslogBrowser.init(...)` returns), throws
+   `TypeError` on anything else. If the adapter also needs to flush eagerly (see point 5), add a
+   parallel `resolveFlush(report)` that no-ops when `report.flush` isn't present — never require
+   a `flush` capability from a bare function-style `report`.
+3. **The adapter owns event → witslog-event normalization** (`message`/`severity`/`error_code`/
+   `tags`/`context`). Callers pass raw `tags`/`context` to merge in, not a mapping function —
+   keeps call sites (e.g. `app/providers.tsx`) to a single `attachWitslog<X>(target, opts)` line.
+4. **Returns a `detach()` cleanup function** that undoes everything the adapter attached
+   (`interceptors.eject(...)`, cache `unsubscribe()`, `provider.off(...)`, …). Callers are
+   expected to invoke it alongside the target's own teardown (e.g. `hp.destroy()`).
+5. **Pick a flush strategy deliberately, don't default to "batched."** High-volume sources
+   (react-query mutations/queries, axios direct-capture) are fine relying on the reporter's own
+   batch window (pagehide/visibilitychange/periodic flush). Low-volume, urgent sources (a
+   collab-server WebSocket dying, an auth failure) should flush immediately after every `emit()`
+   — see `resolveFlush` in `hocuspocus.js` — so the event is durable within seconds regardless of
+   tab visibility, not queued indefinitely.
+
+Every adapter ships a matching `.d.ts` (duck-typed `*Like` interface, not the real framework's
+types) and a `test/<name>.test.js` exercising it against a fake/duck-typed target — no real
+framework dependency in tests either (see `test/axios.test.js`, `test/hocuspocus.test.js`).
 
 ## Mount / flush lifecycle
 

@@ -7,6 +7,8 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-07-23
+
 ### Fixed
 
 - **`delete --force --resolved-before <ts>` (CLI) / `witslog_delete` (MCP) silently
@@ -43,6 +45,27 @@ independently at pre-1.0 — this file tracks the project as a whole.
   lists all 85 ids, and the real delete removes exactly those 85. Regression test:
   `crates/witslog-store/src/writer.rs::tests::preview_delete_matches_what_delete_resolved_would_delete_without_mutating`.
 
+### Added
+
+- **Node SDK Hocuspocus/Yjs collab-provider adapter** (`@all-wits/witslog` 0.6.4,
+  `bindings/node/frameworks/hocuspocus.js` + `.d.ts`): `attachWitslogHocuspocus(provider, opts)`
+  captures abnormal WebSocket closes/disconnects and authentication failures from a
+  `HocuspocusProvider` (or any `EventEmitter`-shaped target exposing `on(event, fn)`/
+  `off(event, fn)`) with zero per-app boilerplate. Duck-typed against the target's public
+  API — no hard `@hocuspocus/provider` dependency, following the
+  `bindings/CONTRACT.md` "Node SDK framework-adapter contract" (five rules: duck-typing,
+  `resolveEmit`/`resolveFlush` report resolution, adapter-owned event normalization,
+  `detach()` cleanup, deliberate flush-strategy choice). Improves on the existing vendored
+  `bindings/browser/witslog-websocket.js::witslogWebSocketWatch` for this specific target
+  two ways: `isAbnormalClose(code, wasClean)` treats any `wasClean:true` close as normal
+  (the vendored watcher checks `code` alone, which misclassifies a clean disconnect
+  synthesizing code 1005 as abnormal), and it additionally captures
+  `authenticationFailed` (`error_code: COLLAB_AUTH_FAILED`). Like the WebSocket watcher,
+  it flushes the reporter immediately after every emit — connection loss/auth failure is
+  rare and urgent, unlike the high-volume sources (react-query/axios) that rely on the
+  reporter's own batch window. Returns a `detach()` cleanup function. Regression tests:
+  `bindings/node/test/hocuspocus.test.js`.
+
 ## [0.1.6] — 2026-07-23
 
 ### Added
@@ -71,17 +94,6 @@ independently at pre-1.0 — this file tracks the project as a whole.
   - Regression tests: `crates/witslog-mcp/src/server.rs::tests`
     (`initialize_response_includes_worked_example_instructions`,
     `every_tool_description_has_a_worked_example`, `severity_min_is_a_closed_enum`).
-
-### Fixed
-
-- **MCP server rejected the standard `initialize` handshake** (`crates/witslog-mcp/src/server.rs`):
-  `dispatch` only handled `tools/list`/`tools/call`, so any MCP client that sends
-  `initialize` first (per the MCP handshake — most do, including Claude Desktop) got
-  `-32601 Method not found` before ever reaching `tools/list`. Added an `"initialize"` arm
-  returning `{protocolVersion, capabilities: {tools: {}}, serverInfo: {name, version}}`
-  (`version` from `env!("CARGO_PKG_VERSION")`). No schema/ABI change — JSON-RPC surface only.
-
-### Added
 
 - **Browser reporter captures `console.error`/`console.warn` + resource-load failures**
   (`@all-wits/witslog` 0.6.1, `bindings/browser/witslog-browser.js` +
@@ -112,7 +124,8 @@ independently at pre-1.0 — this file tracks the project as a whole.
   `event_summary` itself is intentionally unchanged — it still feeds
   search/latest/similar/list_traces/search_all, where a full payload per row
   would make lists unreadable. No FFI/ABI change (MCP JSON only). Builtin
-  tool count: 13 → 14. Regression tests:
+  tool count: 12 → 13 (14 read tools counting the opt-in `search_all`,
+  15 with the write-gated `witslog_delete`). Regression tests:
   `crates/witslog-mcp/tests/p5_integration.rs`
   (`get_event_returns_full_payload_including_stacktrace`,
   `get_event_unknown_id_returns_invalid_params`,
@@ -196,6 +209,13 @@ independently at pre-1.0 — this file tracks the project as a whole.
     full design.
 
 ### Fixed
+
+- **MCP server rejected the standard `initialize` handshake** (`crates/witslog-mcp/src/server.rs`):
+  `dispatch` only handled `tools/list`/`tools/call`, so any MCP client that sends
+  `initialize` first (per the MCP handshake — most do, including Claude Desktop) got
+  `-32601 Method not found` before ever reaching `tools/list`. Added an `"initialize"` arm
+  returning `{protocolVersion, capabilities: {tools: {}}, serverInfo: {name, version}}`
+  (`version` from `env!("CARGO_PKG_VERSION")`). No schema/ABI change — JSON-RPC surface only.
 
 - **Node SDK (`@all-wits/witslog`) undocumented under Next.js bundling**: `witslog.init()` in a
   Next.js Route Handler/Server Action threw `Cannot find the native Koffi module; did you bundle

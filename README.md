@@ -29,8 +29,9 @@ query.
 - 🏷️ **Deterministic taxonomy** — rule-based auto-classification, no model/embedding needed.
 - 🔒 **Redaction built in** — secrets/PII stripped before anything touches disk.
 - 🔗 **Correlation & fingerprinting** — dedup recurring errors, walk causality chains.
-- 🤖 **MCP server** — 14 read tools (including `get_event`, the full event payload — stacktrace,
-  exception, context, tags, metadata — for AI-assisted debugging) + 1 gated write tool.
+- 🤖 **MCP server** — 13 built-in read tools (including `get_event`, the full event payload —
+  stacktrace, exception, context, tags, metadata — for AI-assisted debugging), plus opt-in
+  `search_all` (`--attach`) and a gated `witslog_delete` write tool (`--allow-write`).
 - 🌍 **Cross-language SDKs** — Node, Python, PHP/Laravel over a shared C ABI.
 - ⏱️ **Resolution tracking & MTTR** — mark errors resolved, filter the unresolved backlog,
   fingerprint-level mean time-to-resolution.
@@ -89,8 +90,8 @@ witslog log app "connection timeout" --error-code ETIMEDOUT --severity error
 ### Search & inspect
 
 ```bash
-witslog query "timeout*" --severity error
-witslog query --unresolved          # unresolved backlog only
+witslog query "timeout*" --severity-min error
+witslog query "*" --unresolved      # unresolved backlog only (FTS query arg required; "*" = match all)
 witslog get <event_id> --json        # full structured event, not just the summary line
 witslog query "timeout*" --json      # same, for a whole result set
 witslog resolve <event_id>          # mark resolved (idempotent; --force to override)
@@ -187,12 +188,21 @@ witslogAxiosInterceptor(apiClient, { report: myBrowserReporter });
 ```
 
 ```js
-// useBoardDoc.ts-style collab hook — logs abnormal WebSocket closes
+// useBoardDoc.ts-style collab hook (browser) — logs abnormal WebSocket closes
 // (HocuspocusProvider onClose/onDisconnect), previously silent. Vendored
 // file, same as witslog-browser.js above — not an npm package.
 const { witslogWebSocketWatch } = require('./witslog-websocket'); // bindings/browser/witslog-websocket.js
 const watch = witslogWebSocketWatch({ report: myBrowserReporter });
 new HocuspocusProvider({ ..., onClose: watch.onClose, onDisconnect: watch.onDisconnect });
+```
+
+```js
+// Node-side equivalent (e.g. a collab server process) — attachWitslogHocuspocus
+// additionally captures authenticationFailed and correctly ignores clean
+// disconnects that synthesize close code 1005; returns a detach() to unwind
+const { attachWitslogHocuspocus } = require('@all-wits/witslog/frameworks/hocuspocus');
+const detach = attachWitslogHocuspocus(hocuspocusProvider, { report: myBrowserReporter });
+// later: detach(); hocuspocusProvider.destroy();
 ```
 
 See [bindings/CONTRACT.md](bindings/CONTRACT.md#node-sdk-auto-instrumentation-fetch-nextjs-react-query-adapters)
@@ -202,8 +212,7 @@ section) and the [Node SDK README](bindings/node/README.md) for the full API.
 ## 🧭 Status
 
 Pre-1.0. Core logging, storage, taxonomy, search, MCP server, SDKs, perf hardening,
-extensibility/security, and MTTR/notifiers/browser capture are shipped and tested; packaging
-(P8) is in progress.
+extensibility/security, MTTR/notifiers/browser capture, and packaging are shipped and tested.
 
 | Phase | What | Status |
 |-------|------|--------|
@@ -215,7 +224,7 @@ extensibility/security, and MTTR/notifiers/browser capture are shipped and teste
 | P5 | MCP server (14 tools, JSON-RPC/stdio) | ✅ |
 | P6 | SDK bindings (Node/Python/PHP + framework adapters) | ✅ |
 | P7 | Perf benches + concurrency hardening | ✅ |
-| P8 | Packaging + cross-platform install | 🟡 install scripts + release CI + smoke test shipped, verified green on GitHub Actions; no cut release yet |
+| P8 | Packaging + cross-platform install | ✅ install scripts + release CI + smoke test shipped, verified green on GitHub Actions; tags cut through `v0.1.7` |
 | P9 | Extensibility (plugins) + security (encryption, tamper-evident audit chain) | ✅ |
 | P10 | MTTR/resolution tracking, notifiers, browser-side error capture | ✅ |
 
@@ -254,7 +263,7 @@ Runs as a stdio JSON-RPC server. Any MCP-compatible client (Claude, other LLMs) 
 
 `search_errors` · `latest_errors` · `summarize_errors` · `classify_error` · `explain_error` ·
 `similar_errors` · `list_categories` · `statistics` · `timeline` · `top_failures` · `mttr` ·
-`list_traces` · `search_all` (opt-in federation) · `witslog_delete` (gated, write)
+`list_traces` · `get_event` · `search_all` (opt-in federation) · `witslog_delete` (gated, write)
 
 > No write tool exists for resolution, deliberately — `witslog_delete` (gated behind
 > `--allow-write`) is the only write tool. A resolve tool would let an agent silently

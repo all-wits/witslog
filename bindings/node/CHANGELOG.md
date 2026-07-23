@@ -8,6 +8,25 @@ the Rust workspace (pre-1.0).
 
 ## [0.6.4] — 2026-07-23
 
+### Added
+
+- **Hocuspocus/Yjs collab-provider adapter** — `frameworks/hocuspocus.js` + `.d.ts`,
+  `attachWitslogHocuspocus(provider, opts)`. Captures abnormal WebSocket closes/disconnects
+  and authentication failures from a `HocuspocusProvider` (or any `EventEmitter`-shaped
+  target exposing `on(event, fn)`/`off(event, fn)`) with zero per-app boilerplate.
+  Duck-typed against the target's public API — no hard `@hocuspocus/provider` dependency,
+  following the [Node SDK framework-adapter contract](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md#node-sdk-framework-adapter-contract-bindingsnodeframeworksjs)
+  (duck-typing, `resolveEmit`/`resolveFlush` report resolution, adapter-owned event
+  normalization, `detach()` cleanup, deliberate flush strategy). Supersedes the vendored
+  `bindings/browser/witslog-websocket.js::witslogWebSocketWatch` for Hocuspocus specifically:
+  `isAbnormalClose(code, wasClean)` treats any `wasClean:true` close as normal (the vendored
+  watcher checks `code` alone, misclassifying a clean disconnect that synthesizes code 1005
+  as abnormal), and it additionally captures `authenticationFailed`
+  (`error_code: COLLAB_AUTH_FAILED`). Flushes the reporter immediately after every emit —
+  connection loss/auth failure is rare and urgent, unlike high-volume sources
+  (react-query/axios) that rely on the reporter's own batch window. Returns a `detach()`
+  cleanup function. Tests: `test/hocuspocus.test.js`.
+
 ### Fixed
 
 - **`witslog_delete`/CLI `delete --force --resolved-before <ts>` silently skipped

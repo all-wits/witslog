@@ -262,6 +262,32 @@ const watch = witslogWebSocketWatch({ report: myBrowserReporter });
 new HocuspocusProvider({ ..., onClose: watch.onClose, onDisconnect: watch.onDisconnect });
 ```
 
+### Hocuspocus/Yjs collab-provider adapter (Node-side)
+
+`frameworks/hocuspocus.js` — `attachWitslogHocuspocus(provider, opts)` — is the Node-process
+counterpart to `witslog-websocket.js` above, purpose-built for a `HocuspocusProvider` (or any
+`EventEmitter`-shaped target exposing `on(event, fn)`/`off(event, fn)`) rather than a raw
+`CloseEvent` hook. Two improvements over the vendored watcher for this target specifically:
+`isAbnormalClose(code, wasClean)` treats any `wasClean:true` close as normal — the vendored
+watcher checks `code` alone, so a clean disconnect that synthesizes close code 1005 ("No Status
+Rcvd", which the browser does locally on a routine `provider.destroy()`/tab-nav/HMR reload) is
+misclassified as abnormal — and it additionally captures `authenticationFailed`
+(`error_code: COLLAB_AUTH_FAILED`). Like the vendored watcher, it flushes the reporter
+immediately after every emit (connection loss/auth failure is rare and urgent, unlike
+high-volume sources such as react-query/axios that rely on the reporter's batch window), and
+duck-types against the target's public API — no hard `@hocuspocus/provider` dependency.
+
+```js
+const { HocuspocusProvider } = require('@hocuspocus/provider');
+const { attachWitslogHocuspocus } = require('@all-wits/witslog/frameworks/hocuspocus');
+
+const hp = new HocuspocusProvider({ url, name, document, token });
+const detach = attachWitslogHocuspocus(hp, { report: myBrowserReporter, tags: ['my-app'] });
+// later: detach(); hp.destroy();
+```
+
+Tests: `test/hocuspocus.test.js`.
+
 ## 🧱 Works with your Node.js stack
 
 `@all-wits/witslog` is a plain npm/pnpm/bun package with no bundler-specific glue — it works
@@ -316,7 +342,8 @@ in **any Node.js process**, which covers the server side of most modern framewor
 | `@all-wits/witslog/frameworks/react-query` | `attachWitslog(queryClient, opts)` | Global React Query mutation/query failure capture. |
 | `@all-wits/witslog/frameworks/axios` | `witslogAxiosInterceptor(axiosInstance, opts?)` | Correlation-id propagation + latency stamping on an axios instance. |
 | `@all-wits/witslog/browser` (0.6.1+) | `WitslogBrowser.init(config)` | Browser-side client reporter — `window.onerror`/unhandled-rejection by default, plus `console.error`/`console.warn` + resource-load failures with `captureConsole: true`. |
-| `bindings/browser/witslog-websocket.js` (vendored, not an npm subpath) | `witslogWebSocketWatch(opts)` | Abnormal WebSocket close/disconnect capture. |
+| `bindings/browser/witslog-websocket.js` (vendored, not an npm subpath) | `witslogWebSocketWatch(opts)` | Abnormal WebSocket close/disconnect capture (browser-side). |
+| `@all-wits/witslog/frameworks/hocuspocus` | `attachWitslogHocuspocus(provider, opts)` | Node-side Hocuspocus/Yjs collab-provider adapter — close/disconnect + `authenticationFailed` capture, `wasClean`-aware. |
 
 ## 🌍 Platform support
 
