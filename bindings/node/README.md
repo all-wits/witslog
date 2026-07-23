@@ -93,6 +93,11 @@ interchangeable, pick whichever is already in your toolchain.
 > npm-bundled `npx witslog <command>` is for ad-hoc/manual use from inside a project — a globally
 > installed CLI is what `serve-mcp --print-mcp-config` should point an MCP client at.
 
+> **ℹ️ MCP tools are self-teaching**: `initialize` returns worked-example `instructions`, and
+> every tool description carries an `Example: {...}` call — helps lightweight/under-informed
+> models pick the right tool (e.g. `search_errors` vs. `latest_errors`) on the first try. See
+> the [root README's MCP section](https://github.com/all-wits/witslog/blob/main/README.md#-integration-with-ai-mcp).
+
 > **🔒 Security:** `argv` enrichment defaults on and captures the full command line. If your
 > app may receive secrets as bare CLI args, call `witslog.init({ enrich: { argv: false } })` —
 > see [CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md#security-note-argv-enrichment-vs-secrets).

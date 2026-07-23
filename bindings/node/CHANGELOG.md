@@ -1,10 +1,22 @@
 # Changelog (`@all-wits/witslog`, Node SDK)
 
 Node-SDK-specific history only — extracted from the project-wide
-[`../../CHANGELOG.md`](../../CHANGELOG.md), which also covers the Rust crates/CLI/MCP server on
+[`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md), which also covers the Rust crates/CLI/MCP server on
 their own independent version numbers. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package versions independently of
 the Rust workspace (pre-1.0).
+
+## [0.6.3] — 2026-07-23
+
+### Added
+
+- **Bundled CLI/native binary's MCP tools are now self-teaching for lightweight
+  models.** Rust-side change — `initialize` now returns worked-example `instructions`,
+  and every tool `description` gained a worked `Example: {...}` clause plus
+  disambiguation against overlapping tools (`search_errors` vs. `latest_errors`, etc.).
+  Ships to npm consumers via the version bump + the binary `_bin/<platform>/witslog`
+  this package bundles; no SDK JS/TS API changed. See the root `CHANGELOG.md` for
+  details.
 
 ## [0.6.2] — 2026-07-22
 
@@ -125,7 +137,7 @@ the Rust workspace (pre-1.0).
   module resolution (internal to the `koffi` dependency, not this package's own `_libs/`
   locator) is bundler-incompatible. Fix is config, not code: add
   `serverExternalPackages: ["@all-wits/witslog", "koffi"]` to `next.config.ts` — see the new
-  Next.js subsection in [README.md](README.md#-works-with-your-nodejs-stack) and
+  Next.js subsection in [README.md](https://github.com/all-wits/witslog/blob/main/bindings/node/README.md#-works-with-your-nodejs-stack) and
   [bindings/CONTRACT.md](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md).
   Regression lock: `test/bundler_koffi.test.js` (webpack bundle of `require('koffi')`, with
   and without externalizing `koffi`).
@@ -137,7 +149,7 @@ the Rust workspace (pre-1.0).
 - **Bundles the real `witslog` CLI binary per platform**, closing the remaining
   npm-install-only gap: `createProject: true` (0.3.0) fixed `init`, but `query`/`stats`/
   `export`/`serve-mcp`/`doctor` have no FFI surface at all (by design — see
-  [`../CONTRACT.md`](../CONTRACT.md)), so they were unreachable without a separate CLI
+  [`CONTRACT.md`](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md)), so they were unreachable without a separate CLI
   install. `bin/witslog.js` is a thin `spawnSync` shim resolving the binary via
   `lib/cli-locator.js` — `WITSLOG_CLI` env override → bundled `_bin/<platform>/witslog{,.exe}`
   → bare `witslog` on `PATH` (mirrors the existing `_libs/`/`WITSLOG_LIB` native-lib locator
@@ -148,7 +160,7 @@ the Rust workspace (pre-1.0).
 
 > **⚠️ For MCP (AI-assistant) registration specifically**, install the CLI globally instead
 > (curl/irm, Homebrew, Scoop, `cargo install`) rather than relying on this bundled binary — see
-> the [README](README.md#-quick-start) and [root README's MCP section](../../README.md#-integration-with-ai-mcp)
+> the [README](https://github.com/all-wits/witslog/blob/main/bindings/node/README.md#-quick-start) and [root README's MCP section](https://github.com/all-wits/witslog/blob/main/README.md#-integration-with-ai-mcp)
 > for why (macOS Intel has no bundled CLI at all; a config path inside this project's
 > `node_modules/` isn't stable across reinstalls).
 
@@ -161,7 +173,7 @@ the Rust workspace (pre-1.0).
   `witslog_bootstrap_project` export before mounting. Closes the gap where `npm install`
   bundled the native lib but shipped no CLI, so a project that never separately installed
   and ran `witslog init` had no way to create `.witslog/` — every `log()`/`error()`/`info()`
-  call failed with `rc=-1`. See [`../CONTRACT.md`](../CONTRACT.md) and [README](README.md).
+  call failed with `rc=-1`. See [`CONTRACT.md`](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md) and [README](https://github.com/all-wits/witslog/blob/main/bindings/node/README.md).
 
 ## [0.2.1] — 2026-07-17
 
@@ -183,7 +195,7 @@ own version bump to actually reach the published listing.
 ### Added
 
 - `witslogBrowserIngest` in `frameworks/express.js` (P10): Express handler accepting batches
-  from [`bindings/browser/witslog-browser.js`](../browser). New export; existing
+  from [`bindings/browser/witslog-browser.js`](https://github.com/all-wits/witslog/blob/main/bindings/browser). New export; existing
   `witslogErrorHandler` unchanged.
 
 ### Fixed

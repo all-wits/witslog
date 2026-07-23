@@ -11,6 +11,19 @@ use witslog_store::DbConnection;
 /// Default per-call statement timeout (FR-P5-007).
 pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Returned as `instructions` in the `initialize` response — a workflow map with
+/// worked examples so a lightweight/under-informed model can pattern-match a correct
+/// first tool call instead of guessing from tool names alone. Every referenced tool
+/// gets a literal `tool_name({field: value})` example matching the shape it actually
+/// expects in `tools/call`'s `arguments`.
+const INITIALIZE_INSTRUCTIONS: &str = "witslog stores structured error events. Typical workflow:\n\
+1. List/browse: latest_errors({limit: 20}) - no query needed. search_errors requires a query string (FTS5 syntax, e.g. {query: \"timeout*\", severity_min: \"error\"}) - use latest_errors instead if you just want to browse.\n\
+2. Investigate one error: get_event({event_id: \"...\"}) for the full raw payload, explain_error({event_id: \"...\"}) for a dossier (root cause + causality chain + recurrence), similar_errors({event_id: \"...\", mode: \"fingerprint\"}) for recurrences/duplicates.\n\
+3. Aggregate/trend: statistics (headline counts), summarize_errors (grouped roll-up), top_failures({by: \"count\", limit: 10}) (ranked recurring issues), timeline({bucket: \"day\"}) (counts over time), mttr (resolution speed).\n\
+4. Correlate a request: list_traces({correlation_id: \"...\"}) or list_traces({root_event_id: \"...\"}).\n\
+5. Taxonomy: list_categories (browse), classify_error({message: \"...\"}) (classify raw text you already have, not a stored event).\n\
+Timestamps are RFC3339 (e.g. \"2026-07-01T00:00:00Z\"). Read-only unless --allow-write is passed (adds witslog_delete, resolved-only by default).";
+
 pub struct ServerConfig {
     pub allow_write: bool,
     pub attached: Vec<std::path::PathBuf>,
@@ -92,7 +105,8 @@ fn dispatch(
                 "serverInfo": {
                     "name": "witslog",
                     "version": env!("CARGO_PKG_VERSION")
-                }
+                },
+                "instructions": INITIALIZE_INSTRUCTIONS
             }))
         }
         "tools/list" => {
@@ -131,5 +145,73 @@ fn dispatch(
         }
         "" => Err(McpError::InvalidParams("missing 'method'".to_string())),
         other => Err(McpError::MethodNotFound(other.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression lock for the "MCP works but no AI assistant knows the
+    /// workflow" gap: `initialize` must carry non-empty `instructions` with
+    /// at least one worked `tool_name({...})` example a weak model can
+    /// pattern-match, not just prose.
+    #[test]
+    fn initialize_response_includes_worked_example_instructions() {
+        let db = DbConnection::open(":memory:").unwrap();
+        db.migrate().unwrap();
+        let config = ServerConfig::default();
+
+        let result = dispatch(&db, &config, "initialize", None).unwrap();
+        let instructions = result["instructions"]
+            .as_str()
+            .expect("instructions must be a string");
+
+        assert!(!instructions.is_empty());
+        assert!(
+            instructions.contains("latest_errors({"),
+            "instructions must contain a worked tool_name({{...}}) example"
+        );
+        assert!(
+            instructions.contains("search_errors"),
+            "instructions must mention search_errors vs. latest_errors disambiguation"
+        );
+    }
+
+    /// Regression lock: every tool description must carry a worked
+    /// `Example: {...}` clause, not regress to a bare one-liner a weak model
+    /// can't pattern-match input shapes from.
+    #[test]
+    fn every_tool_description_has_a_worked_example() {
+        use crate::tools::Tool;
+
+        for tool in Tool::builtin_tools() {
+            assert!(
+                tool.description.contains('{') && tool.description.to_lowercase().contains("example"),
+                "{} description is missing a worked Example: {{...}} clause: {}",
+                tool.name,
+                tool.description
+            );
+        }
+    }
+
+    /// Regression lock: `severity_min` must be a closed enum (matching
+    /// bindings/CONTRACT.md's severity taxonomy), not a free-form string a
+    /// model could guess wrong on.
+    #[test]
+    fn severity_min_is_a_closed_enum() {
+        use crate::tools::Tool;
+
+        for tool in Tool::builtin_tools() {
+            let Some(prop) = tool.input_schema["properties"]["severity_min"].as_object() else {
+                continue;
+            };
+            let enum_values = prop
+                .get("enum")
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{} severity_min must have an enum", tool.name));
+            assert!(enum_values.iter().any(|v| v == "error"));
+            assert!(enum_values.iter().any(|v| v == "fatal"));
+        }
     }
 }

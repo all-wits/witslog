@@ -39,6 +39,16 @@ contract version, still `1` — MCP JSON is a separate surface from `witslog_log
 returns the full event payload (stacktrace/exception/context/tags/metadata) by id, mirroring
 CLI `get --json`; it does not add or change anything here.
 
+**MCP `initialize` returns worked-example `instructions`, and every tool `description` carries
+a worked `Example: {...}` call plus disambiguation against overlapping tools** (also MCP
+JSON, not an ABI/contract-version change). Added after real-world use showed a working
+connection wasn't enough — a lightweight model (Claude Haiku 4.5) failed to retrieve an error
+list because tool descriptions were one-liners with no guidance on which of several
+overlapping tools (`search_errors` vs. `latest_errors`, `explain_error` vs. `similar_errors`
+vs. `list_traces` vs. `get_event`) to call, or what a legal input looked like. See
+`crates/witslog-mcp/src/server.rs::INITIALIZE_INSTRUCTIONS` and
+`crates/witslog-mcp/src/tools.rs::builtin_tools`.
+
 ## `witslog_log` payload (JSON object)
 
 | Field | Type | Req | Notes |

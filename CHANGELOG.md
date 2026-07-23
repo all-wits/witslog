@@ -7,6 +7,35 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-07-23
+
+### Added
+
+- **MCP tools are now self-teaching for lightweight/under-informed models**
+  (`crates/witslog-mcp`): real-world use surfaced that connecting fine (the
+  `initialize`-handshake fix above) wasn't enough — Claude Haiku 4.5 failed to retrieve
+  an error list, and stronger models didn't know the intended workflow, because every
+  tool `description` was a bare one-liner (`"Most recent failures."`) with no worked
+  examples and no disambiguation between overlapping tools (`search_errors` vs.
+  `latest_errors`, `explain_error` vs. `similar_errors` vs. `list_traces` vs.
+  `get_event`). Two protocol-native fixes, chosen over a Claude-Code-specific
+  `SKILL.md` because they reach every MCP client (Claude Desktop, Cursor, Windsurf,
+  etc.) without host-side setup:
+  - `initialize`'s response now includes a top-level `instructions` field (MCP spec
+    2024-11-05, previously unused) — a workflow map with a literal
+    `tool_name({field: value})` example per step, so a model can pattern-match a first
+    call instead of guessing from tool names alone (`server.rs::INITIALIZE_INSTRUCTIONS`).
+  - Every tool's `description` in `tools.rs::builtin_tools` now ends with a worked
+    `Example: {...}` clause and a "use this when / not this when" disambiguation
+    against its nearest overlapping tool. `severity_min` gained a closed `enum`
+    (previously a bare untyped string) matching the severity taxonomy in
+    `bindings/CONTRACT.md`; `from`/`to`/`resolved_before` gained
+    `format: "date-time"` + an RFC3339 `examples` value; `query` gained FTS5 syntax
+    examples (prefix/phrase/boolean forms).
+  - Regression tests: `crates/witslog-mcp/src/server.rs::tests`
+    (`initialize_response_includes_worked_example_instructions`,
+    `every_tool_description_has_a_worked_example`, `severity_min_is_a_closed_enum`).
+
 ### Fixed
 
 - **MCP server rejected the standard `initialize` handshake** (`crates/witslog-mcp/src/server.rs`):

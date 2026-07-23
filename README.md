@@ -260,6 +260,11 @@ Runs as a stdio JSON-RPC server. Any MCP-compatible client (Claude, other LLMs) 
 > `--allow-write`) is the only write tool. A resolve tool would let an agent silently
 > qualify events for `witslog_delete`'s default `resolved_at IS NOT NULL` filter.
 
+Every tool description carries a worked `Example: {...}` call and disambiguates itself
+from its nearest overlapping tool (e.g. `search_errors` vs. `latest_errors`), and
+`initialize` itself returns a short workflow-map `instructions` string — so a
+lightweight/under-informed model can find the right first call without external docs.
+
 MCP client registration snippet — generate it directly (fills in the resolved
 binary path and project `cwd`):
 
