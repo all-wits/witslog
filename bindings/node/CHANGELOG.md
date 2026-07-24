@@ -6,41 +6,7 @@ their own independent version numbers. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package versions independently of
 the Rust workspace (pre-1.0).
 
-## [Unreleased]
-
-### Fixed
-
-- **Bundled CLI's `serve-mcp --stdio` could corrupt the JSON-RPC stream with stray log lines**
-  — `tracing_subscriber` defaulted to stdout, the same channel used for JSON-RPC. Rust-side fix
-  (`crates/witslog-cli/src/main.rs`, writer moved to stderr); ships to npm consumers via the
-  version bump + the binary `_bin/<platform>/witslog` this package bundles — no SDK JS/TS API
-  changed. See the root [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md)
-  for the full explanation.
-
-### Added
-
-- **Bundled CLI's `witslog init`/`witslog config` gained a guided setup wizard** for turning on
-  metadata encryption — arrow keys/spacebar/enter, plain language, no manual `config.toml`
-  editing required. Rust-side change (`crates/witslog-cli`); ships to npm consumers via the
-  version bump + the binary `_bin/<platform>/witslog` this package bundles — no SDK JS/TS API
-  changed. Only appears on a real terminal and only when you haven't already passed
-  `witslog init --encrypt`/`--yes`; piped/CI usage is unaffected. See the root
-  [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md) for the full
-  walkthrough.
-- **Metadata-field encryption (`crypto.key_env`) passthrough** — `init({crypto: {key_env:
-  "WITSLOG_ENCRYPTION_KEY"}})` now reaches the native `witslog_configure` payload and enables
-  AES-256-GCM encryption of the `metadata` field on write. No SDK JS/TS code change was needed
-  (`init` already forwards the config object as-is to the C ABI); this is a Rust-side capability
-  (`crates/witslog-core/src/crypto.rs`, wired via `crates/witslog-ffi/src/lib.rs`) documented
-  here because it's now reachable from this SDK. Ships to npm consumers via the version bump +
-  the binary `_bin/<platform>/witslog`/`_libs/<platform>/witslog_ffi` this package bundles. See
-  the root [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md) and
-  [`bindings/CONTRACT.md`](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md#metadata-encryption-fr-p9-004)
-  for the full design (scope, fail-closed write, `"<encrypted>"` placeholder on read, key
-  rotation). `metadata` is the only encrypted field — `message`/`context`/`stacktrace`/etc. stay
-  plaintext so search keeps working.
-
-## [0.6.4] — 2026-07-23
+## [0.6.4] — 2026-07-24
 
 ### Added
 
@@ -79,6 +45,49 @@ the Rust workspace (pre-1.0).
   runs the same matching query a real delete would (via new `EventWriter::preview_delete`
   in `crates/witslog-store`) and prints the real `would delete N event(s)` count + ids.
   Same shipping mechanism as above (binary-only fix, no SDK JS/TS API changed).
+
+- **Bundled CLI's `serve-mcp --stdio` could corrupt the JSON-RPC stream with stray log lines**
+  — `tracing_subscriber` defaulted to stdout, the same channel used for JSON-RPC. Rust-side fix
+  (`crates/witslog-cli/src/main.rs`, writer moved to stderr); ships to npm consumers via the
+  version bump + the binary `_bin/<platform>/witslog` this package bundles — no SDK JS/TS API
+  changed. See the root [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md)
+  for the full explanation.
+
+### Added
+
+- **Bundled CLI's `witslog init`/`witslog config` gained a guided setup wizard** for turning on
+  metadata encryption — arrow keys/spacebar/enter, plain language, no manual `config.toml`
+  editing required. Rust-side change (`crates/witslog-cli`); ships to npm consumers via the
+  version bump + the binary `_bin/<platform>/witslog` this package bundles — no SDK JS/TS API
+  changed. Only appears on a real terminal and only when you haven't already passed
+  `witslog init --encrypt`/`--yes`; piped/CI usage is unaffected. See the root
+  [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md) for the full
+  walkthrough.
+- **Bundled CLI's `witslog config` menu gained three more toggles** — `buffer.enabled`,
+  `enrich.hostname`, `taxonomy.auto_classify_enabled` — each with a plain-language description
+  before asking on/off, in addition to the encryption item above. Rust-side change
+  (`crates/witslog-cli/src/main.rs::toggle_bool_setting`); ships to npm consumers via the
+  version bump + the binary `_bin/<platform>/witslog` this package bundles — no SDK JS/TS API
+  changed. See the root [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md)
+  for details.
+- **Encryption wizard no longer requires a manual `export`** — the generated key is now written
+  straight into `.witslog/.env` (gitignored) and auto-loaded by the bundled CLI on every
+  invocation, instead of being printed once for you to copy/paste. Rust-side change
+  (`crates/witslog-cli/src/main.rs::write_env_file_var`/`load_dotenv_if_present`); ships via the
+  bundled binary, no SDK JS/TS API changed. See the root
+  [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md) for details.
+- **Metadata-field encryption (`crypto.key_env`) passthrough** — `init({crypto: {key_env:
+  "WITSLOG_ENCRYPTION_KEY"}})` now reaches the native `witslog_configure` payload and enables
+  AES-256-GCM encryption of the `metadata` field on write. No SDK JS/TS code change was needed
+  (`init` already forwards the config object as-is to the C ABI); this is a Rust-side capability
+  (`crates/witslog-core/src/crypto.rs`, wired via `crates/witslog-ffi/src/lib.rs`) documented
+  here because it's now reachable from this SDK. Ships to npm consumers via the version bump +
+  the binary `_bin/<platform>/witslog`/`_libs/<platform>/witslog_ffi` this package bundles. See
+  the root [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md) and
+  [`bindings/CONTRACT.md`](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md#metadata-encryption-fr-p9-004)
+  for the full design (scope, fail-closed write, `"<encrypted>"` placeholder on read, key
+  rotation). `metadata` is the only encrypted field — `message`/`context`/`stacktrace`/etc. stay
+  plaintext so search keeps working.
 
 ## [0.6.3] — 2026-07-23
 
