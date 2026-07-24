@@ -7,6 +7,49 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Added
+
+- **Metadata-field encryption is now wired end-to-end (FR-P9-004)** — previously
+  `witslog_core::crypto::FieldCipher`/`EventBuilder::encrypt_metadata` existed but had no
+  production call site (only a unit test used it); a CLI/SDK adopter had no way to turn it
+  on. Now opt-in via `[crypto] key_env = "YOUR_ENV_VAR_NAME"` in `.witslog/config.toml`
+  (`witslog_config::CryptoSection`) — the named env var must hold a 64-char hex AES-256-GCM
+  key; the key itself is never written to `config.toml`. Wired into **both** write paths
+  (`crates/witslog-runtime/src/lib.rs::apply_pipeline`/`build_and_write`, and the FFI's
+  separate pipeline in `crates/witslog-ffi/src/lib.rs::witslog_log`/`witslog_configure` —
+  SDK writes never touch witslog-runtime, so both needed the change) and both read paths
+  (CLI `get`/MCP `get_event`+`explain_error`, via `witslog_core::crypto::decrypt_metadata_for_display`).
+  - **Scope: `metadata` only.** `message`/`context`/`stacktrace`/etc. stay plaintext — FTS5
+    and the `GENERATED ALWAYS AS (json_extract(...))` columns need them; whole-event
+    encryption remains out of scope (see PHASES.md §P9).
+  - **Fail-closed on write:** if `key_env` is configured but the env var is unset/invalid
+    hex, the write is refused (CLI/FFI non-zero, ambient capture drops silently like any
+    other write failure) — metadata is never silently persisted in plaintext.
+  - **Placeholder on read:** if the reading process doesn't hold the key (or the key is
+    wrong), `metadata` renders as the string `"<encrypted>"` rather than raw ciphertext or a
+    failed call — every other field (message, exception, stacktrace, category, context,
+    fingerprint, trace chain) is unaffected, so an MCP-connected agent without the key can
+    still fully triage an error; it only loses whatever was deliberately placed in `metadata`.
+  - **Key rotation (v1): single active key only**, no rotation machinery. To rotate, either
+    let old rows age out via `[retention]` or `export`→rotate→`import` (re-encrypts on
+    write); rows under a retired key show `"<encrypted>"` until then (ciphertext, not data,
+    is what's lost — restoring the old key makes them readable again). A future key-ring
+    (adding a `"kid"` to the envelope) is an additive, non-breaking upgrade if ever needed.
+  - **Field discipline (the intended usage pattern):** put debug signal (error context,
+    request ids, feature flags, non-sensitive app state) in `context`/`tags` — always
+    plaintext, always visible to CLI/MCP/AI triage. Put PII/secrets in `metadata` — the one
+    field this encrypts, visible only to a reader holding the key.
+  - Files: `crates/witslog-config/src/lib.rs` (`CryptoSection`), `crates/witslog-core/src/crypto.rs`
+    (`decrypt_metadata_for_display`), `crates/witslog-runtime/src/lib.rs`,
+    `crates/witslog-ffi/src/lib.rs`, `crates/witslog-mcp/src/{registry,server}.rs`,
+    `crates/witslog-cli/src/main.rs` (`get_event`, `cmd_serve_mcp`). Tests:
+    `crates/witslog-runtime/tests/p9_crypto_integration.rs`, new cases in
+    `crates/witslog-ffi/src/lib.rs::tests` and `crates/witslog-mcp/tests/p5_integration.rs`.
+  - No schema migration (`metadata` is already `TEXT`/JSON; an envelope is just a different
+    JSON shape — encrypted and plaintext rows coexist). No `WITSLOG_ABI_VERSION` bump (the
+    FFI `witslog_configure` JSON gains an additive, optional `crypto.key_env` field; older
+    SDK builds that omit it are unaffected).
+
 ## [0.1.7] — 2026-07-23
 
 ### Fixed

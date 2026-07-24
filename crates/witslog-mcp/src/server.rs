@@ -28,6 +28,12 @@ pub struct ServerConfig {
     pub allow_write: bool,
     pub attached: Vec<std::path::PathBuf>,
     pub statement_timeout: Duration,
+    /// FR-P9-004: env var name holding the metadata-encryption key (from
+    /// `[crypto] key_env` in `config.toml`), or `None` if not configured.
+    /// When set and the env var actually holds a valid key at call time,
+    /// `get_event`/`explain_error` decrypt `metadata`; otherwise readers see
+    /// the `"<encrypted>"` placeholder (see `witslog_core::crypto::decrypt_metadata_for_display`).
+    pub crypto_key_env: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -36,6 +42,7 @@ impl Default for ServerConfig {
             allow_write: false,
             attached: Vec::new(),
             statement_timeout: DEFAULT_STATEMENT_TIMEOUT,
+            crypto_key_env: None,
         }
     }
 }
@@ -112,7 +119,8 @@ fn dispatch(
         "tools/list" => {
             let registry = ToolRegistry::new(db)
                 .with_allow_write(config.allow_write)
-                .with_attached(config.attached.clone());
+                .with_attached(config.attached.clone())
+                .with_crypto_key_env(config.crypto_key_env.clone());
             let tools: Vec<Value> = registry
                 .list_tools()
                 .into_iter()
@@ -129,7 +137,8 @@ fn dispatch(
         "tools/call" => {
             let registry = ToolRegistry::new(db)
                 .with_allow_write(config.allow_write)
-                .with_attached(config.attached.clone());
+                .with_attached(config.attached.clone())
+                .with_crypto_key_env(config.crypto_key_env.clone());
             let params = params.unwrap_or(Value::Null);
             let name = params
                 .get("name")

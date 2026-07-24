@@ -129,6 +129,35 @@ impl EventBuilder {
     }
 }
 
+/// Read-side helper for `metadata` display (FR-P9-004 wiring): reverses
+/// `encrypt_metadata` for output paths (CLI `get`/`query`/`export`, MCP
+/// `get_event`/`explain_error`) without ever failing the read.
+///
+/// - Not an encrypted envelope (`__witslog_enc` marker absent, or `None`) →
+///   returned unchanged. Covers plaintext/legacy rows and events with no
+///   metadata at all.
+/// - Envelope present, `cipher` given, decrypts successfully → plaintext.
+/// - Envelope present but `cipher` is `None` (reader has no key) **or**
+///   decryption fails (wrong/rotated key, corrupted data) → the string
+///   placeholder `"<encrypted>"`. A reader without the key sees that the
+///   field exists and is protected, never a crash and never raw ciphertext.
+pub fn decrypt_metadata_for_display(
+    metadata: Option<JsonValue>,
+    cipher: Option<&FieldCipher>,
+) -> Option<JsonValue> {
+    let value = metadata?;
+    if value.get(ENC_MARKER_KEY).and_then(|v| v.as_str()).is_none() {
+        return Some(value);
+    }
+    match cipher {
+        Some(c) => match c.decrypt_json(&value) {
+            Ok(plaintext) => Some(plaintext),
+            Err(_) => Some(JsonValue::String("<encrypted>".to_string())),
+        },
+        None => Some(JsonValue::String("<encrypted>".to_string())),
+    }
+}
+
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
     if s.len() % 2 != 0 {
@@ -207,6 +236,52 @@ mod tests {
         assert!(FieldCipher::from_env("WITSLOG_TEST_UNSET_ENCRYPTION_KEY_XYZ")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn decrypt_for_display_passes_through_plaintext() {
+        let plain = serde_json::json!({"a": 1});
+        assert_eq!(
+            decrypt_metadata_for_display(Some(plain.clone()), None),
+            Some(plain)
+        );
+    }
+
+    #[test]
+    fn decrypt_for_display_passes_through_none() {
+        assert_eq!(decrypt_metadata_for_display(None, None), None);
+    }
+
+    #[test]
+    fn decrypt_for_display_decrypts_with_cipher() {
+        let cipher = test_cipher();
+        let original = serde_json::json!({"user": "x@y.com"});
+        let encrypted = cipher.encrypt_json(&original);
+        assert_eq!(
+            decrypt_metadata_for_display(Some(encrypted), Some(&cipher)),
+            Some(original)
+        );
+    }
+
+    #[test]
+    fn decrypt_for_display_placeholders_without_cipher() {
+        let cipher = test_cipher();
+        let encrypted = cipher.encrypt_json(&serde_json::json!({"user": "x@y.com"}));
+        assert_eq!(
+            decrypt_metadata_for_display(Some(encrypted), None),
+            Some(JsonValue::String("<encrypted>".to_string()))
+        );
+    }
+
+    #[test]
+    fn decrypt_for_display_placeholders_on_wrong_key() {
+        let cipher_a = test_cipher();
+        let cipher_b = FieldCipher::new(&[9u8; 32]).unwrap();
+        let encrypted = cipher_a.encrypt_json(&serde_json::json!({"user": "x@y.com"}));
+        assert_eq!(
+            decrypt_metadata_for_display(Some(encrypted), Some(&cipher_b)),
+            Some(JsonValue::String("<encrypted>".to_string()))
+        );
     }
 
     #[test]

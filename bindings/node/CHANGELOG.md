@@ -6,6 +6,23 @@ their own independent version numbers. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package versions independently of
 the Rust workspace (pre-1.0).
 
+## [Unreleased]
+
+### Added
+
+- **Metadata-field encryption (`crypto.key_env`) passthrough** — `init({crypto: {key_env:
+  "WITSLOG_ENCRYPTION_KEY"}})` now reaches the native `witslog_configure` payload and enables
+  AES-256-GCM encryption of the `metadata` field on write. No SDK JS/TS code change was needed
+  (`init` already forwards the config object as-is to the C ABI); this is a Rust-side capability
+  (`crates/witslog-core/src/crypto.rs`, wired via `crates/witslog-ffi/src/lib.rs`) documented
+  here because it's now reachable from this SDK. Ships to npm consumers via the version bump +
+  the binary `_bin/<platform>/witslog`/`_libs/<platform>/witslog_ffi` this package bundles. See
+  the root [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md) and
+  [`bindings/CONTRACT.md`](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md#metadata-encryption-fr-p9-004)
+  for the full design (scope, fail-closed write, `"<encrypted>"` placeholder on read, key
+  rotation). `metadata` is the only encrypted field — `message`/`context`/`stacktrace`/etc. stay
+  plaintext so search keeps working.
+
 ## [0.6.4] — 2026-07-23
 
 ### Added

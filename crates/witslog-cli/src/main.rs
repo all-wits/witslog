@@ -413,14 +413,27 @@ fn get_event(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
-    let config = Config::default_project();
+    // `load_or_default` so `[crypto] key_env` is respected — see the same
+    // change/rationale in `cmd_serve_mcp`.
+    let config = Config::load_or_default(&cwd);
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
     let store = Store::open_or_create(&db_path)?;
     let writer = witslog_store::EventWriter::new(store.conn());
 
     match writer.query_by_id(event_id)? {
-        Some(event) => {
+        Some(mut event) => {
+            // FR-P9-004: display-only decrypt (never fail-closed on read) —
+            // decrypts `metadata` if this process has the configured key,
+            // else replaces it with the `"<encrypted>"` placeholder.
+            let cipher = config
+                .crypto
+                .key_env
+                .as_ref()
+                .and_then(|var| witslog_core::FieldCipher::from_env(var).ok().flatten());
+            event.metadata =
+                witslog_core::decrypt_metadata_for_display(event.metadata, cipher.as_ref());
+
             if json {
                 println!("{}", serde_json::to_string_pretty(&event)?);
                 return Ok(());
@@ -1380,7 +1393,11 @@ fn cmd_serve_mcp(
     allow_write: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
-    let config = Config::default_project();
+    // `load_or_default` (not `default_project`) so `[crypto] key_env` (and
+    // any other `.witslog/config.toml` section) is actually respected here —
+    // without this, the MCP server could never know which env var holds the
+    // metadata-decryption key regardless of what the project's config says.
+    let config = Config::load_or_default(&cwd);
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
     if !db_path.exists() {
@@ -1404,6 +1421,7 @@ fn cmd_serve_mcp(
         allow_write,
         attached: attach,
         statement_timeout: witslog_mcp::server::DEFAULT_STATEMENT_TIMEOUT,
+        crypto_key_env: config.crypto.key_env.clone(),
     };
 
     witslog_mcp::serve_stdio(&db, mcp_config)?;

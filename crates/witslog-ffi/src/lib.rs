@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
-use witslog_core::{AsyncBuffer, BufferConfig, EnrichConfig, EventBuilder, Redactor, Severity};
+use witslog_core::{
+    AsyncBuffer, BufferConfig, EnrichConfig, EventBuilder, FieldCipher, Redactor, Severity,
+};
 use witslog_store::{DeleteFilter, Store, StoreSink};
 
 /// Version of the JSON contract this native library speaks. SDK wrappers call
@@ -34,6 +36,11 @@ struct RuntimeConfig {
     enrich: EnrichConfig,
     redactor: Arc<Redactor>,
     buffer: BufferConfig,
+    /// FR-P9-004: env var name holding the metadata-encryption key, or `None`
+    /// (default) — encryption off. Mirrors `witslog_config::CryptoSection`;
+    /// resolved to a `FieldCipher` fresh at each `witslog_log` call (see
+    /// `witslog_runtime::resolve_cipher` for the same pattern/rationale).
+    crypto_key_env: Option<String>,
 }
 
 impl Default for RuntimeConfig {
@@ -42,6 +49,7 @@ impl Default for RuntimeConfig {
             enrich: EnrichConfig::default(),
             redactor: Arc::new(Redactor::built_in()),
             buffer: BufferConfig::default(),
+            crypto_key_env: None,
         }
     }
 }
@@ -81,10 +89,16 @@ struct BufferConfigDto {
 }
 
 #[derive(Deserialize, Default)]
+struct CryptoConfigDto {
+    key_env: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
 struct ConfigureRequest {
     enrich: Option<EnrichConfigDto>,
     redact: Option<RedactConfigDto>,
     buffer: Option<BufferConfigDto>,
+    crypto: Option<CryptoConfigDto>,
 }
 
 /// Configure runtime enrichment/redaction/buffering for subsequent `witslog_log`
@@ -149,6 +163,15 @@ pub unsafe extern "C" fn witslog_configure(json_ptr: *const c_char) -> i32 {
         }
         if let Some(v) = b.queue_capacity {
             cfg.buffer.queue_capacity = v;
+        }
+    }
+
+    if let Some(c) = req.crypto {
+        // `key_env: null`/absent leaves the current setting unchanged (same
+        // "only touch what's present" convention as enrich/redact/buffer
+        // above); pass `key_env: ""` explicitly to turn encryption back off.
+        if let Some(v) = c.key_env {
+            cfg.crypto_key_env = if v.is_empty() { None } else { Some(v) };
         }
     }
 
@@ -267,10 +290,24 @@ pub unsafe extern "C" fn witslog_log(json_ptr: *const c_char) -> i64 {
         builder = builder.metadata(m);
     }
 
-    let event = builder
-        .enrich(&cfg.enrich)
-        .redact(cfg.redactor.as_ref())
-        .build();
+    // Fail-closed (FR-P9-004): if `crypto.key_env` is configured but the key
+    // can't be resolved (unset var, bad hex), refuse the write rather than
+    // silently persisting `metadata` in plaintext. `-1` matches every other
+    // write-failure code this function already returns.
+    let cipher = match &cfg.crypto_key_env {
+        None => None,
+        Some(var) => match FieldCipher::from_env(var) {
+            Ok(Some(c)) => Some(c),
+            Ok(None) | Err(_) => return -1,
+        },
+    };
+
+    let builder = builder.enrich(&cfg.enrich).redact(cfg.redactor.as_ref());
+    let builder = match &cipher {
+        Some(c) => builder.encrypt_metadata(c),
+        None => builder,
+    };
+    let event = builder.build();
 
     if cfg.buffer.enabled {
         let buf_lock = BUFFER.get_or_init(|| Mutex::new(None));
@@ -702,6 +739,82 @@ mod tests {
 
             // Reset global config so later tests in this process see defaults.
             let reset_json = CString::new(r#"{"enrich":{"argv":true}}"#).unwrap();
+            witslog_configure(reset_json.as_ptr());
+        });
+    }
+
+    /// 64 hex chars ("07" * 32) = a valid 32-byte AES-256 key.
+    fn test_key_hex() -> String {
+        "07".repeat(32)
+    }
+
+    #[test]
+    fn configure_crypto_key_env_encrypts_metadata_through_witslog_log() {
+        // Regression lock (FR-P9-004, FFI pipeline): SDK writes (Python/Node/PHP)
+        // go through this crate's own RuntimeConfig/pipeline, not witslog-runtime's
+        // — this proves `metadata` encryption is wired here too, not just in the
+        // Rust ambient/CLI path (see witslog-runtime's p9_crypto_integration.rs).
+        with_tmp_cwd(|| unsafe {
+            let var = "WITSLOG_TEST_FFI_CRYPTO_KEY";
+            std::env::set_var(var, test_key_hex());
+
+            let configure_json =
+                CString::new(format!(r#"{{"crypto":{{"key_env":"{var}"}}}}"#)).unwrap();
+            assert_eq!(witslog_configure(configure_json.as_ptr()), 0);
+
+            let log_json = CString::new(
+                r#"{"application":"app","message":"boom","metadata":{"user_email":"x@y.com"}}"#,
+            )
+            .unwrap();
+            let row_id = witslog_log(log_json.as_ptr());
+            assert!(row_id >= 0);
+
+            let store = Store::open_or_create(resolve_db_path()).unwrap();
+            let metadata: String = store
+                .conn()
+                .conn()
+                .query_row("SELECT metadata FROM events LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            assert!(
+                metadata.contains("__witslog_enc"),
+                "metadata stored as envelope, got: {metadata}"
+            );
+            assert!(!metadata.contains("x@y.com"), "plaintext must not appear in storage");
+
+            std::env::remove_var(var);
+            // Reset global config so later tests in this process see defaults.
+            let reset_json = CString::new(r#"{"crypto":{"key_env":""}}"#).unwrap();
+            witslog_configure(reset_json.as_ptr());
+        });
+    }
+
+    #[test]
+    fn configure_crypto_key_env_fails_closed_when_var_unset() {
+        with_tmp_cwd(|| unsafe {
+            let var = "WITSLOG_TEST_FFI_CRYPTO_KEY_UNSET";
+            std::env::remove_var(var); // ensure genuinely unset
+
+            let configure_json =
+                CString::new(format!(r#"{{"crypto":{{"key_env":"{var}"}}}}"#)).unwrap();
+            assert_eq!(witslog_configure(configure_json.as_ptr()), 0);
+
+            let log_json = CString::new(
+                r#"{"application":"app","message":"boom","metadata":{"a":1}}"#,
+            )
+            .unwrap();
+            let row_id = witslog_log(log_json.as_ptr());
+            assert_eq!(row_id, -1, "write must be refused, not silently persisted in plaintext");
+
+            let store = Store::open_or_create(resolve_db_path()).unwrap();
+            let count: i64 = store
+                .conn()
+                .conn()
+                .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+
+            // Reset global config so later tests in this process see defaults.
+            let reset_json = CString::new(r#"{"crypto":{"key_env":""}}"#).unwrap();
             witslog_configure(reset_json.as_ptr());
         });
     }

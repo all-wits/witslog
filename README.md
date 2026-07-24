@@ -225,7 +225,7 @@ extensibility/security, MTTR/notifiers/browser capture, and packaging are shippe
 | P6 | SDK bindings (Node/Python/PHP + framework adapters) | ✅ |
 | P7 | Perf benches + concurrency hardening | ✅ |
 | P8 | Packaging + cross-platform install | ✅ install scripts + release CI + smoke test shipped, verified green on GitHub Actions; tags cut through `v0.1.7` |
-| P9 | Extensibility (plugins) + security (encryption, tamper-evident audit chain) | ✅ |
+| P9 | Extensibility (plugins) + security (`metadata`-field AES-256-GCM encryption, opt-in via `[crypto] key_env`; tamper-evident audit chain) | ✅ |
 | P10 | MTTR/resolution tracking, notifiers, browser-side error capture | ✅ |
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes and [PHASES.md](PHASES.md) for the detailed

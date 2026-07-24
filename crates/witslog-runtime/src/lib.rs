@@ -26,7 +26,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use witslog_config::Config;
 use witslog_core::{
     error as build_error, exception as build_exception, info as build_info, warn as build_warn,
-    AsyncBuffer, BufferConfig, Classifier, EnrichConfig, Event, EventBuilder, Redactor, Severity,
+    AsyncBuffer, BufferConfig, Classifier, EnrichConfig, Event, EventBuilder, FieldCipher, Redactor,
+    Severity,
 };
 use witslog_store::{EventWriter, Store, StoreSink};
 
@@ -48,6 +49,11 @@ pub enum RuntimeError {
     CustomRules(String),
     #[error(transparent)]
     Store(#[from] witslog_store::StoreError),
+    /// FR-P9-004 fail-closed: `crypto.key_env` names an env var, but it's
+    /// unset or not valid 64-char hex. The write is refused rather than
+    /// silently persisting `metadata` in plaintext.
+    #[error("metadata encryption is configured (key_env={0:?}) but the key is unavailable: {1}")]
+    MissingEncryptionKey(String, String),
 }
 
 /// `(registry, min_severity_rank)` — `None` when `[notify]` is disabled or
@@ -64,6 +70,11 @@ struct Runtime {
     buffer_cfg: BufferConfig,
     db_path: PathBuf,
     notify: NotifyState,
+    /// FR-P9-004: env var name holding the metadata-encryption key, or `None`
+    /// if encryption is off. Resolved to a `FieldCipher` fresh at each write
+    /// (not cached) — cheap `env::var` lookup, and means the check is always
+    /// against the *current* env, not a snapshot taken at mount time.
+    crypto_key_env: Option<String>,
 }
 
 /// Cheap, clonable view of the runtime taken under the lock, so the actual
@@ -77,6 +88,7 @@ struct Snapshot {
     buffer_cfg: BufferConfig,
     db_path: PathBuf,
     notify: NotifyState,
+    crypto_key_env: Option<String>,
 }
 
 static RUNTIME: OnceLock<RwLock<Runtime>> = OnceLock::new();
@@ -93,6 +105,7 @@ fn snapshot() -> Option<Snapshot> {
         buffer_cfg: rt.buffer_cfg.clone(),
         db_path: rt.db_path.clone(),
         notify: rt.notify.clone(),
+        crypto_key_env: rt.crypto_key_env.clone(),
     })
 }
 
@@ -175,6 +188,25 @@ fn build_runtime(config: &Config, db_path: PathBuf) -> Runtime {
         buffer_cfg: buffer_cfg_from(config),
         db_path,
         notify: build_notify_registry(config),
+        crypto_key_env: config.crypto.key_env.clone(),
+    }
+}
+
+/// Resolves `crypto.key_env` to a `FieldCipher`, fail-closed (FR-P9-004): if
+/// `key_env` names a var that's unset or not valid hex, this returns an
+/// error rather than silently falling back to plaintext `metadata`.
+/// `key_env: None` (encryption off) always returns `Ok(None)`.
+fn resolve_cipher(key_env: &Option<String>) -> Result<Option<FieldCipher>, RuntimeError> {
+    let Some(var) = key_env else {
+        return Ok(None);
+    };
+    match FieldCipher::from_env(var) {
+        Ok(Some(cipher)) => Ok(Some(cipher)),
+        Ok(None) => Err(RuntimeError::MissingEncryptionKey(
+            var.clone(),
+            "environment variable is not set".to_string(),
+        )),
+        Err(e) => Err(RuntimeError::MissingEncryptionKey(var.clone(), e.to_string())),
     }
 }
 
@@ -218,7 +250,13 @@ fn write_via_snapshot(snap: &Snapshot, builder: EventBuilder, force_sync: bool) 
     } else {
         None
     };
-    let event = apply_pipeline(builder, &snap.enrich, &snap.redactor, classifier);
+    // Fail-closed (FR-P9-004): if encryption is configured but the key can't
+    // be resolved, drop the write rather than persist metadata in plaintext.
+    // This silently drops the event, matching every other failure in this
+    // ambient path (store-open failure, buffer-full) — `capture`/`capture_sync`
+    // already document "never panics" over "never loses an event".
+    let cipher = resolve_cipher(&snap.crypto_key_env).ok()?;
+    let event = apply_pipeline(builder, &snap.enrich, &snap.redactor, classifier, cipher.as_ref());
 
     let result = if snap.buffer_cfg.enabled && !force_sync {
         enqueue_buffered(&snap.db_path, &snap.buffer_cfg, event.clone())
@@ -285,7 +323,17 @@ pub fn build_and_write(
     } else {
         None
     };
-    let event = apply_pipeline(builder, &enrich_from(config), &redactor, classifier.as_ref());
+    // Fail-closed (FR-P9-004): propagate as a real error here (unlike the
+    // ambient ...`write_via_snapshot` path) since `build_and_write` callers
+    // (CLI `witslog log`, FFI) can and should surface it as a failed write.
+    let cipher = resolve_cipher(&config.crypto.key_env)?;
+    let event = apply_pipeline(
+        builder,
+        &enrich_from(config),
+        &redactor,
+        classifier.as_ref(),
+        cipher.as_ref(),
+    );
 
     let store = Store::open_or_create(db_path)?;
 
@@ -310,10 +358,18 @@ fn apply_pipeline(
     enrich: &EnrichConfig,
     redactor: &Redactor,
     classifier: Option<&Classifier>,
+    cipher: Option<&FieldCipher>,
 ) -> Event {
     let builder = builder.enrich(enrich).redact(redactor);
     let builder = match classifier {
         Some(c) => builder.classify(c),
+        None => builder,
+    };
+    // FR-P9-004: encrypt `metadata` last — after redact (so any pattern-shaped
+    // secret elsewhere in metadata's plaintext still gets a redaction pass)
+    // and before build (so the stored Event carries the envelope, not raw JSON).
+    let builder = match cipher {
+        Some(c) => builder.encrypt_metadata(c),
         None => builder,
     };
     builder.build()

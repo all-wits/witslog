@@ -16,6 +16,9 @@ pub struct ToolRegistry<'a> {
     db: &'a DbConnection,
     allow_write: bool,
     attached: Vec<std::path::PathBuf>,
+    /// FR-P9-004: env var name holding the metadata-encryption key, or
+    /// `None` if not configured. See `ServerConfig::crypto_key_env`.
+    crypto_key_env: Option<String>,
 }
 
 impl<'a> ToolRegistry<'a> {
@@ -24,6 +27,7 @@ impl<'a> ToolRegistry<'a> {
             db,
             allow_write: false,
             attached: Vec::new(),
+            crypto_key_env: None,
         }
     }
 
@@ -35,6 +39,21 @@ impl<'a> ToolRegistry<'a> {
     pub fn with_attached(mut self, attached: Vec<std::path::PathBuf>) -> Self {
         self.attached = attached;
         self
+    }
+
+    pub fn with_crypto_key_env(mut self, crypto_key_env: Option<String>) -> Self {
+        self.crypto_key_env = crypto_key_env;
+        self
+    }
+
+    /// Resolves `crypto_key_env` to a `FieldCipher` for this call, or `None`
+    /// if encryption isn't configured / the key can't be resolved right now.
+    /// Unlike the write path, this is never fail-closed — a reader missing
+    /// the key still gets the rest of the event; `event_detail` falls back
+    /// to the `"<encrypted>"` placeholder for `metadata` alone.
+    fn resolve_cipher(&self) -> Option<witslog_core::FieldCipher> {
+        let var = self.crypto_key_env.as_ref()?;
+        witslog_core::FieldCipher::from_env(var).ok().flatten()
     }
 
     /// List all available tools — `search_all` only when DBs are attached,
@@ -241,7 +260,7 @@ impl<'a> ToolRegistry<'a> {
             .map(event_summary);
 
         Ok(json!({
-            "event": event_detail(&event),
+            "event": event_detail(&event, self.resolve_cipher().as_ref()),
             "root_cause": root_cause,
             "chain": trace.ordered_events.iter().map(event_summary).collect::<Vec<_>>(),
             "edges": trace.edges.iter().map(|e| json!({
@@ -576,7 +595,7 @@ impl<'a> ToolRegistry<'a> {
             .map_err(|e| McpError::DbError(e.to_string()))?
             .ok_or_else(|| McpError::InvalidParams("event not found".to_string()))?;
 
-        Ok(event_detail(&event))
+        Ok(event_detail(&event, self.resolve_cipher().as_ref()))
     }
 
     /// Resolve `event_id`/`fingerprint` params to a concrete `event_id`,
@@ -619,8 +638,25 @@ fn event_summary(e: &witslog_core::Event) -> Value {
 /// error_code/root_cause/context/tags/metadata that `event_summary` drops.
 /// Used by `get_event` and `explain_error`'s focal event; mirrors CLI `get
 /// --json` (`witslog-cli/src/main.rs`'s `get_event`, `serde_json::to_string_pretty(&event)`).
-fn event_detail(e: &witslog_core::Event) -> Value {
-    serde_json::to_value(e).unwrap_or_else(|_| event_summary(e))
+///
+/// FR-P9-004: `metadata` is decrypted in place when `cipher` is given and the
+/// stored value is an encrypted envelope; otherwise (no cipher, or a cipher
+/// that can't decrypt it) it's replaced with the `"<encrypted>"` placeholder
+/// — see `witslog_core::crypto::decrypt_metadata_for_display`.
+fn event_detail(e: &witslog_core::Event, cipher: Option<&witslog_core::FieldCipher>) -> Value {
+    let mut value = serde_json::to_value(e).unwrap_or_else(|_| event_summary(e));
+    if let Some(obj) = value.as_object_mut() {
+        let displayed = witslog_core::decrypt_metadata_for_display(e.metadata.clone(), cipher);
+        match displayed {
+            Some(v) => {
+                obj.insert("metadata".to_string(), v);
+            }
+            None => {
+                obj.insert("metadata".to_string(), Value::Null);
+            }
+        }
+    }
+    value
 }
 
 fn str_field(params: &Value, key: &str) -> Option<String> {

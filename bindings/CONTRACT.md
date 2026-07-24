@@ -19,7 +19,7 @@ breaking change to the payloads below.
 | Symbol | Signature (C) | Meaning |
 |---|---|---|
 | `witslog_abi_version` | `int32 (void)` | Contract version (see above). |
-| `witslog_configure` | `int32 (const char* json)` | Set enrich/redact/buffer for this process. `0` ok, `-1` bad JSON, `-2` bad redact regex. |
+| `witslog_configure` | `int32 (const char* json)` | Set enrich/redact/buffer/crypto for this process. `0` ok, `-1` bad JSON **or** `crypto.key_env` configured but the key is unresolvable (fail-closed — see below), `-2` bad redact regex. |
 | `witslog_init` | `int32 (const char* json_or_null)` | Mount the process runtime + Rust panic hook. Applies `witslog_configure` payload first (null = defaults). `0`/`-1`/`-2` as above. |
 | `witslog_log` | `int64 (const char* json)` | Log one event (payload below). Returns the DB rowid on the sync path, `0` when buffering is enabled (rowid not yet known), `-1` on error. Never panics. |
 | `witslog_resolve` | `int32 (const char* event_id)` | Mark an event resolved. `0`/`-1`. |
@@ -88,11 +88,47 @@ same unwrap should follow the same `context.root_cause` convention for consisten
               "git_commit": true, "env_allowlist": ["PATH"] },
   "redact": { "custom_patterns": ["MY_TOKEN_[A-Z0-9]+"] },
   "buffer": { "enabled": false, "batch_size": 50, "flush_interval_ms": 1000,
-              "queue_capacity": 1024 }
+              "queue_capacity": 1024 },
+  "crypto": { "key_env": "WITSLOG_ENCRYPTION_KEY" }
 }
 ```
 
-All keys optional; omitted keys keep their current value.
+All keys optional; omitted keys keep their current value. `crypto.key_env` is additive (no
+`WITSLOG_ABI_VERSION` bump) — older SDK builds simply never send it, which is equivalent to
+encryption staying off. Pass `"key_env": ""` to explicitly turn it back off.
+
+## Metadata encryption (FR-P9-004)
+
+`metadata` — the free-form JSON bag on `witslog_log`'s payload — can be encrypted at rest
+(AES-256-GCM) as `{"__witslog_enc": "<base64 nonce||ciphertext>"}`. Off by default; opt in via
+`crypto.key_env` above (native/FFI callers) or `[crypto] key_env = "..."` in
+`.witslog/config.toml` (CLI/ambient Rust runtime). The named env var must hold a 64-char hex
+key at write time; the key itself never appears in `config.toml` or the `witslog_configure`
+JSON.
+
+- **Scope is `metadata` only.** `message`/`context`/`stacktrace`/`exception`/`tags` are always
+  plaintext — FTS5 and the generated columns need to read them, so encrypting them would
+  silently break search (see PHASES.md §P9). This is *not* whole-event/whole-DB encryption.
+- **Fail-closed on write:** `key_env` configured but the var unset or not valid hex → the
+  write is refused (`witslog_log` returns `-1`; the CLI/ambient runtime path fails the same
+  way) rather than silently persisting `metadata` in plaintext.
+- **Placeholder on read:** a reader (CLI `get`, MCP `get_event`/`explain_error`) without the
+  key sees `metadata` as the literal string `"<encrypted>"`, never raw ciphertext and never a
+  failed call. Every other field is unaffected — an MCP-connected agent without the key can
+  still fully triage an error (message, exception, stacktrace, category, context, fingerprint,
+  trace chain are all plaintext); it only loses whatever was deliberately placed in `metadata`.
+- **Field discipline (recommended usage):** put debug signal — request ids, feature flags,
+  non-sensitive app state — in `context`/`tags` (always plaintext, always AI/CLI-visible). Put
+  PII/secrets in `metadata` (the one field this protects, visible only to a reader holding the
+  key). Mixing sensitive data into `context` bypasses encryption entirely; mixing debug signal
+  into `metadata` hides it from a key-less reader — put each kind in its intended field.
+- **Key rotation (v1): single active key, no rotation machinery.** Rotate by letting old rows
+  age out via `[retention]`, or `export` → rotate the key → `import` (re-encrypts on write).
+  Rows under a retired key show `"<encrypted>"` until then — the ciphertext is retained, so
+  restoring the old key makes them readable again; nothing is destroyed. A future key-ring
+  (adding a `"kid"` alongside `__witslog_enc` in the envelope) would be an additive, non-breaking
+  upgrade to this contract if rotation is ever needed — do not treat the current envelope shape
+  as final if implementing that.
 
 ## `witslog_delete` filter payload (JSON object)
 
@@ -208,7 +244,12 @@ MCP-connected LLM). Port the Node handler's logic (see its source for the full r
    genuinely originates from `127.0.0.1` (the attack is a malicious page open in the same
    browser as your dev server), so a loopback check alone does not stop it.
 2. **Refuse to arm in production** unless explicitly forced by the caller.
-3. **Rate-limit by client** — per-request size caps don't bound request *volume*.
+3. **Rate-limit by client** — per-request size caps don't bound request *volume*. The
+   reference implementation's bucket store (`Map`) is **in-process, not distributed** — this
+   is a local-dev-only endpoint by design; if a handler built from this recipe ever runs
+   behind a load balancer with multiple instances, the effective rate limit becomes
+   `max × instance_count`, since each instance tracks its own buckets independently. Don't
+   run this endpoint at scale without a shared (e.g. Redis-backed) rate-limit store.
 4. **Clamp severity to `error`/`warn`** (never let untrusted input claim
    `fatal`/`critical`) and cap message/stacktrace/batch/body sizes.
 5. Map each accepted event through your SDK's normal `log`/`exception` call with

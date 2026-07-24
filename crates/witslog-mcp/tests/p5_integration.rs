@@ -254,6 +254,46 @@ fn get_event_returns_full_payload_including_stacktrace() {
     assert_eq!(detail["context"], json!({"attempt": 3}));
 }
 
+/// FR-P9-004 wiring: `get_event`/`explain_error` decrypt `metadata` when the
+/// registry is built `with_crypto_key_env` and the process actually holds
+/// that key at call time; otherwise the field is the `"<encrypted>"`
+/// placeholder — never raw ciphertext, never a failed call.
+#[test]
+fn get_event_decrypts_metadata_when_registry_has_the_key() {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let var = "WITSLOG_TEST_MCP_CRYPTO_KEY";
+    std::env::set_var(var, "07".repeat(32));
+
+    let db = DbConnection::open(":memory:").unwrap();
+    db.migrate().unwrap();
+    let writer = EventWriter::new(&db);
+
+    let cipher = witslog_core::FieldCipher::from_env(var).unwrap().unwrap();
+    let event = EventBuilder::new("checkout-svc", "payment gateway timeout")
+        .metadata(json!({"user_email": "x@y.com"}))
+        .encrypt_metadata(&cipher)
+        .build();
+    writer.write(&event).unwrap();
+
+    // With the key: decrypted plaintext.
+    let with_key = ToolRegistry::new(&db).with_crypto_key_env(Some(var.to_string()));
+    let detail = with_key
+        .call_tool("get_event", json!({"event_id": event.event_id}))
+        .expect("get_event should succeed");
+    assert_eq!(detail["metadata"], json!({"user_email": "x@y.com"}));
+
+    // Without the key (registry never told about it): placeholder, not ciphertext.
+    let without_key = ToolRegistry::new(&db);
+    let detail = without_key
+        .call_tool("get_event", json!({"event_id": event.event_id}))
+        .expect("get_event should succeed even without the key");
+    assert_eq!(detail["metadata"], json!("<encrypted>"));
+
+    std::env::remove_var(var);
+}
+
 #[test]
 fn get_event_unknown_id_returns_invalid_params() {
     let db = setup_db_with_events();

@@ -12,6 +12,7 @@ pub struct Config {
     pub buffer: BufferSection,
     pub taxonomy: TaxonomySection,
     pub notify: NotifySection,
+    pub crypto: CryptoSection,
 }
 
 impl Default for Config {
@@ -118,6 +119,18 @@ impl Default for NotifySection {
     }
 }
 
+/// FR-P9-004 wiring: opt-in `metadata`-field encryption (see
+/// `witslog_core::crypto::FieldCipher`). `key_env` names an env var holding
+/// a 64-char hex AES-256-GCM key — the key itself is never stored in
+/// `config.toml`. `None` (default) = encryption off. Level-0 key model
+/// (single active key, no rotation) — see CLAUDE.md/CONTRACT.md for the
+/// rotate-by-retention-or-reimport guidance.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CryptoSection {
+    pub key_env: Option<String>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read config file {path}: {source}")]
@@ -175,6 +188,7 @@ impl Config {
             buffer: BufferSection::default(),
             taxonomy: TaxonomySection::default(),
             notify: NotifySection::default(),
+            crypto: CryptoSection::default(),
         }
     }
 
@@ -291,5 +305,27 @@ mod tests {
     fn config_without_notify_section_uses_defaults() {
         let cfg: Config = toml::from_str("").unwrap();
         assert!(!cfg.notify.enabled);
+    }
+
+    #[test]
+    fn crypto_defaults_to_disabled() {
+        let cfg = Config::default_project();
+        assert_eq!(cfg.crypto.key_env, None);
+    }
+
+    #[test]
+    fn crypto_section_parses_from_toml() {
+        let toml_str = r#"
+            [crypto]
+            key_env = "WITSLOG_ENCRYPTION_KEY"
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.crypto.key_env, Some("WITSLOG_ENCRYPTION_KEY".to_string()));
+    }
+
+    #[test]
+    fn config_without_crypto_section_uses_defaults() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.crypto.key_env, None);
     }
 }

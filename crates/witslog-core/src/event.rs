@@ -218,6 +218,11 @@ impl EventBuilder {
     }
 
     /// Apply secret redaction to message/exception/stacktrace/context/metadata.
+    /// **Does not touch `tags`** — tags are caller-set/classifier-suggested,
+    /// low-cardinality labels, not a place secrets are expected to land; if a
+    /// caller ever puts free-form/user-controlled text into a tag, it will
+    /// persist un-redacted (and, unlike `metadata`, tags are never encrypted
+    /// either — see `crypto::FieldCipher`/FR-P9-004).
     pub fn redact(mut self, redactor: &crate::redact::Redactor) -> Self {
         self.message = redactor.redact(&self.message);
         if let Some(exc) = &self.exception {
