@@ -99,6 +99,25 @@ encryption staying off. Pass `"key_env": ""` to explicitly turn it back off.
 
 ## Metadata encryption (FR-P9-004)
 
+**Setting this up by hand isn't required — `witslog init`/`witslog config` can do it for you.**
+On a real terminal, both commands offer a guided prompt (arrow keys/spacebar/enter, plain
+language) that generates a real key, writes only the env var *name* into `config.toml`, and
+writes the actual key value into `.witslog/.env` (gitignored, 0600 on Unix) — no custom name to
+pick, no manual `export`/copy-paste. `load_dotenv_if_present` (`witslog-cli/src/main.rs`) loads
+that file into the process env once at CLI startup, before any command runs and before the
+crypto key is resolved, so the very next `witslog log`/`witslog get` etc. just works with no
+further intervention once the wizard is confirmed. `witslog init --encrypt[=VAR_NAME]`/`--yes`
+does the same without the interactive prompt, for scripts/CI. This is a CLI-only convenience —
+it writes the exact `[crypto] key_env = "..."` shape described below, nothing about the contract
+itself changes. See the root `README.md`/`CHANGELOG.md` for the full walkthrough. The rest of
+this section describes the underlying mechanism for anyone configuring it manually (e.g. SDK
+callers, who have no CLI wizard/`.env` auto-load to run).
+
+**`witslog config`'s interactive menu also toggles `buffer.enabled`, `enrich.hostname`, and
+`taxonomy.auto_classify_enabled`** (in addition to encryption) — each with an inline plain-
+language description, written to `config.toml` via the same `toml_edit`-based read-modify-write
+as the crypto flow so unrelated sections/comments/formatting survive untouched.
+
 `metadata` — the free-form JSON bag on `witslog_log`'s payload — can be encrypted at rest
 (AES-256-GCM) as `{"__witslog_enc": "<base64 nonce||ciphertext>"}`. Off by default; opt in via
 `crypto.key_env` above (native/FFI callers) or `[crypto] key_env = "..."` in

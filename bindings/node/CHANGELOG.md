@@ -8,8 +8,25 @@ the Rust workspace (pre-1.0).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bundled CLI's `serve-mcp --stdio` could corrupt the JSON-RPC stream with stray log lines**
+  — `tracing_subscriber` defaulted to stdout, the same channel used for JSON-RPC. Rust-side fix
+  (`crates/witslog-cli/src/main.rs`, writer moved to stderr); ships to npm consumers via the
+  version bump + the binary `_bin/<platform>/witslog` this package bundles — no SDK JS/TS API
+  changed. See the root [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md)
+  for the full explanation.
+
 ### Added
 
+- **Bundled CLI's `witslog init`/`witslog config` gained a guided setup wizard** for turning on
+  metadata encryption — arrow keys/spacebar/enter, plain language, no manual `config.toml`
+  editing required. Rust-side change (`crates/witslog-cli`); ships to npm consumers via the
+  version bump + the binary `_bin/<platform>/witslog` this package bundles — no SDK JS/TS API
+  changed. Only appears on a real terminal and only when you haven't already passed
+  `witslog init --encrypt`/`--yes`; piped/CI usage is unaffected. See the root
+  [`CHANGELOG.md`](https://github.com/all-wits/witslog/blob/main/CHANGELOG.md) for the full
+  walkthrough.
 - **Metadata-field encryption (`crypto.key_env`) passthrough** — `init({crypto: {key_env:
   "WITSLOG_ENCRYPTION_KEY"}})` now reaches the native `witslog_configure` payload and enables
   AES-256-GCM encryption of the `metadata` field on write. No SDK JS/TS code change was needed

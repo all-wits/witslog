@@ -79,7 +79,18 @@ Django, Flask, Laravel) and the [SDK↔native contract](bindings/CONTRACT.md).
 witslog init .
 ```
 
-Creates `./.witslog/witslog.db` in the current directory.
+Creates `./.witslog/witslog.db` in the current directory. On a real terminal, `witslog init`
+also asks (arrow keys/spacebar/enter, plain language) whether you want to protect sensitive
+data you might log later — say yes and it generates a secret key, writes it straight into
+`.witslog/.env` (gitignored — never committed, never shown as a manual copy/paste step), and
+sets everything up; nothing further to run, the very next command already has the key loaded.
+Say no (or press Enter to skip), and nothing changes. Prefer to skip the questions? `witslog init
+--encrypt` (optionally `--encrypt=YOUR_VAR_NAME`) or `witslog init --yes` does the same without
+asking — and CI/scripts never see a prompt either way. Change your mind later with `witslog
+config` (same arrow-key menu — it also toggles buffered writes, hostname enrichment, and
+automatic error classification, each with an inline description). See "Metadata encryption" in
+[bindings/CONTRACT.md](bindings/CONTRACT.md#metadata-encryption-fr-p9-004) for what this
+actually protects.
 
 ### Log an event
 

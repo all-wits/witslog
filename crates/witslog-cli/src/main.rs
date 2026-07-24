@@ -37,6 +37,15 @@ enum Commands {
     Init {
         #[arg(value_name = "PATH", default_value = ".")]
         path: PathBuf,
+        /// Turn on encryption for sensitive data without the interactive wizard.
+        /// Takes the name of the environment variable that will hold the key
+        /// (defaults to WITSLOG_ENCRYPTION_KEY if you just pass --encrypt with
+        /// no name). Skips all prompts.
+        #[arg(long, num_args = 0..=1, default_missing_value = "WITSLOG_ENCRYPTION_KEY")]
+        encrypt: Option<String>,
+        /// Skip the interactive wizard even on a real terminal — use flags/defaults only.
+        #[arg(long)]
+        yes: bool,
     },
     Log {
         app: String,
@@ -102,6 +111,9 @@ enum Commands {
         dry_run: bool,
     },
     Config {
+        /// "encrypt" jumps straight to the encryption prompt/change instead of
+        /// the default resolved-config printout. Omit on a real terminal to
+        /// get an arrow-key menu instead.
         action: Option<String>,
     },
     Archive {
@@ -193,9 +205,24 @@ enum CategoryAction {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // MUST write to stderr, never stdout: `serve-mcp --stdio` treats stdout as
+    // a pure JSON-RPC channel end to end (transport.rs has no println!/print
+    // of its own) — any stray tracing line on stdout (from this crate or a
+    // dependency) gets parsed by the MCP client as a malformed response
+    // (Zod's invalid_union error trying every response shape), breaking every
+    // subsequent message on that connection. This applies to every subcommand
+    // since the subscriber is installed once here, before the match on
+    // `cli.command`.
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
+        .with_writer(std::io::stderr)
         .init();
+
+    // Load `.witslog/.env` (e.g. WITSLOG_ENCRYPTION_KEY written by the
+    // encryption wizard) before anything else reads env vars — must run
+    // before witslog_runtime::init_default() below, which resolves
+    // crypto.key_env for its own write pipeline.
+    load_dotenv_if_present();
 
     // Mount witslog so the CLI's own panics are auto-captured as Fatal events.
     let _witslog_guard = witslog_runtime::init_default();
@@ -203,8 +230,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { path } => {
-            init_db(&path)?;
+        Commands::Init { path, encrypt, yes } => {
+            init_db(&path, encrypt, yes)?;
         }
         Commands::Log {
             app,
@@ -310,7 +337,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn init_db(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn init_db(
+    path: &PathBuf,
+    encrypt: Option<String>,
+    non_interactive: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let witslog_dir = path.join(".witslog");
     std::fs::create_dir_all(&witslog_dir)?;
 
@@ -337,7 +368,176 @@ fn init_db(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Initialized witslog at {}", db_path.display());
     println!("  DB path: {}", db_path.display());
 
+    // Only offer the wizard on a real terminal, and only when the caller
+    // hasn't already told us what they want via --encrypt/--yes — a flag
+    // means "skip prompts, I've decided already" (keeps CI/scripts working
+    // without ever blocking on stdin: `witslog init --encrypt` still passes
+    // straight through with no prompts).
+    let wizard_eligible = !non_interactive && encrypt.is_none() && is_interactive_terminal();
+
+    let encrypt_choice = if wizard_eligible {
+        run_init_encryption_prompt()?
+    } else {
+        encrypt
+    };
+
+    if let Some(var_name) = encrypt_choice {
+        enable_metadata_encryption(&witslog_dir, &var_name)?;
+    }
+
     Ok(())
+}
+
+/// True only when both stdin and stdout are a real terminal — piping either
+/// end (CI, `| tee`, a script) must never trigger a prompt that would hang
+/// waiting for input that will never arrive.
+fn is_interactive_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+/// The one fixed name every wizard-driven setup uses for the encryption-key
+/// env var — no naming prompt, no bikeshedding. Anyone who wants a different
+/// name can still set `[crypto] key_env = "..."` in config.toml by hand; the
+/// wizard just doesn't ask.
+const DEFAULT_ENCRYPTION_KEY_ENV: &str = "WITSLOG_ENCRYPTION_KEY";
+
+/// Arrow-key/space/enter prompt asking whether to turn on metadata
+/// encryption. Returns `None` if the user declines or cancels (Ctrl+C);
+/// `Some(DEFAULT_ENCRYPTION_KEY_ENV)` if they say yes.
+fn run_init_encryption_prompt() -> Result<Option<String>, Box<dyn std::error::Error>> {
+    use dialoguer::{theme::ColorfulTheme, MultiSelect};
+
+    println!();
+    println!("A quick question to set up your project (press Ctrl+C anytime to skip — nothing is written until you confirm):");
+    println!();
+
+    let theme = ColorfulTheme::default();
+    let options = ["Protect sensitive info you log (like emails, tokens, or account numbers) — recommended if you're not sure"];
+
+    let selected = match MultiSelect::with_theme(&theme)
+        .with_prompt("Optional features (space to select, enter to continue)")
+        .items(&options)
+        .interact_opt()
+    {
+        Ok(Some(selected)) => selected,
+        Ok(None) | Err(_) => return Ok(None), // Ctrl+C / cancelled — skip silently
+    };
+
+    if selected.is_empty() {
+        return Ok(None);
+    }
+
+    println!();
+    println!("This encrypts one field (\"metadata\") so it's unreadable without a secret key you keep yourself.");
+    println!("Everything else you log stays searchable as normal — this only protects data you deliberately mark sensitive.");
+
+    Ok(Some(DEFAULT_ENCRYPTION_KEY_ENV.to_string()))
+}
+
+/// Generates a fresh AES-256-GCM key, writes only the *name* of the env var
+/// that will hold it into config.toml (never the key itself — see
+/// bindings/CONTRACT.md's "Metadata encryption" section), and writes the
+/// actual key value into `.witslog/.env` (gitignored via the blanket
+/// `.witslog/` entry in `.gitignore`) so no manual copy-paste/export step is
+/// needed — `load_dotenv_if_present` (called once at CLI startup, before any
+/// command runs) reads it back into the process env on every subsequent
+/// invocation. Uses `toml_edit` rather than a blind rewrite so a pre-existing
+/// config.toml's other sections/comments are left untouched.
+fn enable_metadata_encryption(
+    witslog_dir: &std::path::Path,
+    var_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key_hex = generate_hex_key();
+    let config_path = witslog_dir.join("config.toml");
+
+    let mut doc: toml_edit::DocumentMut = if config_path.exists() {
+        std::fs::read_to_string(&config_path)?.parse()?
+    } else {
+        toml_edit::DocumentMut::new()
+    };
+    // Explicit `Table` (not the inline-table shorthand `crypto = { key_env = ... }`
+    // that indexing an empty slot defaults to) so the file reads as the
+    // `[crypto]` section documented in bindings/CONTRACT.md.
+    if doc.get("crypto").and_then(|i| i.as_table()).is_none() {
+        doc["crypto"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["crypto"]["key_env"] = toml_edit::value(var_name);
+    std::fs::write(&config_path, doc.to_string())?;
+
+    write_env_file_var(witslog_dir, var_name, &key_hex)?;
+    std::env::set_var(var_name, &key_hex); // takes effect immediately, this process too
+
+    println!();
+    println!("✓ Encryption turned on (config.toml now points at env var: {var_name})");
+    println!("✓ Key written to {} — never committed (gitignored), auto-loaded on every witslog run", witslog_dir.join(".env").display());
+    println!("  No manual export needed. Losing this file means anything already encrypted");
+    println!("  stays locked forever, so back it up somewhere safe (password manager, vault).");
+    println!();
+
+    Ok(())
+}
+
+/// Writes/replaces a single `KEY=value` line in `<witslog_dir>/.env`,
+/// preserving any other vars already there. Creates the file (0600 on Unix)
+/// if it doesn't exist yet.
+fn write_env_file_var(
+    witslog_dir: &std::path::Path,
+    var_name: &str,
+    value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let env_path = witslog_dir.join(".env");
+
+    let mut lines: Vec<String> = if env_path.exists() {
+        std::fs::read_to_string(&env_path)?
+            .lines()
+            .filter(|line| !line.starts_with(&format!("{var_name}=")))
+            .map(|line| line.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    lines.push(format!("{var_name}={value}"));
+    std::fs::write(&env_path, lines.join("\n") + "\n")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(())
+}
+
+/// Loads `<cwd>/.witslog/.env` (if present) into the process environment,
+/// called once at CLI startup before any subcommand runs. Only fills in vars
+/// that aren't already set in the real environment — an explicit `export`/
+/// `$env:` from the caller's shell always wins over the file. Silently a
+/// no-op if the project isn't initialized yet or the file doesn't exist.
+fn load_dotenv_if_present() {
+    let Ok(cwd) = std::env::current_dir() else { return };
+    let env_path = cwd.join(".witslog").join(".env");
+    let Ok(contents) = std::fs::read_to_string(&env_path) else { return };
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if std::env::var_os(key).is_none() {
+                std::env::set_var(key, value);
+            }
+        }
+    }
+}
+
+/// 32 random bytes, hex-encoded — the shape `FieldCipher::from_env` expects.
+fn generate_hex_key() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn log_event(
@@ -1142,17 +1342,181 @@ fn cmd_prune(
 
 fn cmd_config(
     db_override: &Option<PathBuf>,
-    _action: Option<String>,
+    action: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
     let config = Config::load_or_default(&cwd);
     let db_path = db_override.clone().unwrap_or_else(|| config.resolve_db_path(&cwd));
 
-    println!("Config resolved:");
-    println!("  db path: {}", db_path.display());
-    println!("  buffer.enabled: {}", config.buffer.enabled);
-    println!("  enrich.hostname: {}", config.enrich.hostname);
-    println!("  taxonomy.auto_classify_enabled: {}", config.taxonomy.auto_classify_enabled);
+    let print_resolved = || {
+        println!("Config resolved:");
+        println!("  db path: {}", db_path.display());
+        println!("  buffer.enabled: {}", config.buffer.enabled);
+        println!("  enrich.hostname: {}", config.enrich.hostname);
+        println!("  taxonomy.auto_classify_enabled: {}", config.taxonomy.auto_classify_enabled);
+        println!(
+            "  crypto.key_env: {}",
+            config.crypto.key_env.as_deref().unwrap_or("(off)")
+        );
+    };
+
+    // "config encrypt" always jumps straight to the encryption flow, no menu.
+    // No action + a real terminal gets the arrow-key menu. Anything else
+    // (no action, non-interactive — the pre-existing behavior, e.g. in CI)
+    // just prints the resolved config, unchanged.
+    if action.as_deref() == Some("encrypt") {
+        return run_config_encryption_flow(&db_path, &config);
+    }
+
+    if action.is_none() && is_interactive_terminal() {
+        return run_config_menu(&db_path, &config, print_resolved);
+    }
+
+    print_resolved();
+    Ok(())
+}
+
+fn run_config_menu(
+    db_path: &std::path::Path,
+    config: &Config,
+    print_resolved: impl Fn(),
+) -> Result<(), Box<dyn std::error::Error>> {
+    use dialoguer::{theme::ColorfulTheme, Select};
+
+    let items = [
+        "Show current settings",
+        "Turn on / change encryption for sensitive data",
+        "Toggle buffered (async) writes — buffer.enabled",
+        "Toggle hostname enrichment — enrich.hostname",
+        "Toggle automatic error classification — taxonomy.auto_classify_enabled",
+        "Exit without changes",
+    ];
+
+    let choice = match Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("What would you like to do? (↑/↓ to move, enter to select)")
+        .items(&items)
+        .default(0)
+        .interact_opt()
+    {
+        Ok(Some(choice)) => choice,
+        Ok(None) | Err(_) => return Ok(()), // Ctrl+C / cancelled
+    };
+
+    match choice {
+        0 => print_resolved(),
+        1 => run_config_encryption_flow(db_path, config)?,
+        2 => toggle_bool_setting(
+            db_path,
+            "buffer",
+            "enabled",
+            config.buffer.enabled,
+            "Buffer writes asynchronously in a background queue instead of blocking the caller on every write (trades a small durability window for lower write latency)",
+        )?,
+        3 => toggle_bool_setting(
+            db_path,
+            "enrich",
+            "hostname",
+            config.enrich.hostname,
+            "Attach the machine's hostname to every logged event's context (useful for multi-host deployments, off if hostnames are sensitive)",
+        )?,
+        4 => toggle_bool_setting(
+            db_path,
+            "taxonomy",
+            "auto_classify_enabled",
+            config.taxonomy.auto_classify_enabled,
+            "Automatically assign a category to each event via the builtin rules engine when none is set explicitly",
+        )?,
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Generic on/off toggle for a `[section] key = bool` config.toml entry,
+/// shared by every boolean item in `run_config_menu`. Mirrors
+/// `enable_metadata_encryption`'s use of `toml_edit` so a pre-existing
+/// config.toml's other sections/comments/formatting are left untouched.
+fn toggle_bool_setting(
+    db_path: &std::path::Path,
+    section: &str,
+    key: &str,
+    current: bool,
+    description: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use dialoguer::{theme::ColorfulTheme, Confirm};
+
+    println!();
+    println!("{description}");
+    let new_value = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("{section}.{key} (currently {current}) — turn on?"))
+        .default(current)
+        .interact()
+        .unwrap_or(current);
+
+    if new_value == current {
+        println!("No changes made.");
+        return Ok(());
+    }
+
+    let witslog_dir = db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".witslog"));
+    let config_path = witslog_dir.join("config.toml");
+
+    let mut doc: toml_edit::DocumentMut = if config_path.exists() {
+        std::fs::read_to_string(&config_path)?.parse()?
+    } else {
+        toml_edit::DocumentMut::new()
+    };
+    if doc.get(section).and_then(|i| i.as_table()).is_none() {
+        doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc[section][key] = toml_edit::value(new_value);
+    std::fs::write(&config_path, doc.to_string())?;
+
+    println!("✓ {section}.{key} set to {new_value} (config.toml)");
+    Ok(())
+}
+
+/// Shared by `config encrypt` (explicit) and the interactive menu's
+/// "Turn on / change encryption" item. If encryption is already on, offers to
+/// rotate (generate + store a brand-new key under the same or a renamed env
+/// var) rather than silently clobbering the existing setup.
+fn run_config_encryption_flow(
+    db_path: &std::path::Path,
+    config: &Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let witslog_dir = db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(".witslog"));
+
+    if let Some(existing_var) = &config.crypto.key_env {
+        use dialoguer::{theme::ColorfulTheme, Confirm};
+        println!("Encryption is already on (env var: {existing_var}).");
+        let rotate = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(
+                "Generate a brand-new key now? (rows encrypted under the old key stay \
+                 readable only if you still have that old key saved somewhere)",
+            )
+            .default(false)
+            .interact()
+            .unwrap_or(false);
+
+        if !rotate {
+            println!("No changes made.");
+            return Ok(());
+        }
+        enable_metadata_encryption(&witslog_dir, existing_var)?;
+        return Ok(());
+    }
+
+    if let Some(var_name) = run_init_encryption_prompt()? {
+        enable_metadata_encryption(&witslog_dir, &var_name)?;
+    } else {
+        println!("No changes made.");
+    }
 
     Ok(())
 }

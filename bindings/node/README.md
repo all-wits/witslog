@@ -72,6 +72,15 @@ npx witslog init .
 npx witslog query "db timeout*"
 ```
 
+On a real terminal, `npx witslog init` also asks (arrow keys/spacebar/enter, plain language,
+no jargon) whether you want to protect sensitive data you might log later — say yes and it
+generates a secret key, shows it to you once (never saved to disk — you store it yourself), and
+wires up `.witslog/config.toml`. Skip the prompt with `npx witslog init --encrypt` or `--yes`;
+piped/CI usage never sees a prompt either way. Revisit the choice anytime with
+`npx witslog config`. See
+[CONTRACT.md's "Metadata encryption" section](https://github.com/all-wits/witslog/blob/main/bindings/CONTRACT.md#metadata-encryption-fr-p9-004)
+for what this does and doesn't cover.
+
 For programmatic use `createProject: true` remains the way to scaffold `.witslog/` from code
 without shelling out:
 

@@ -7,7 +7,65 @@ independently at pre-1.0 — this file tracks the project as a whole.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`serve-mcp --stdio` could corrupt the JSON-RPC stream with plain-text log lines**
+  (`crates/witslog-cli/src/main.rs`): `tracing_subscriber::fmt().init()` at the top of `main()`
+  defaults its writer to **stdout**, and runs for every subcommand, including `serve-mcp
+  --stdio` — which treats stdout as a pure JSON-RPC channel end to end. Any `tracing::info!`/
+  `warn!`/`debug!` call (this crate or a dependency) during a stdio session landed on the same
+  stream the MCP client parses as JSON-RPC, producing a client-side schema-validation failure
+  (tried every response shape — success/error/notification — matched none) on a stray log line.
+  Fixed by pointing the subscriber at stderr (`.with_writer(std::io::stderr)`) — tracing output
+  was never meant to be machine-consumed on stdout in the first place, so this changes nothing
+  about any documented interface. Confirmed via a real client (`serve-mcp --stdio` driven with
+  `initialize` + `tools/list` over a packed-and-installed Node SDK tarball) before and after.
+
 ### Added
+
+- **`witslog init` and `witslog config` now offer a guided, arrow-key setup wizard**
+  (`crates/witslog-cli/src/main.rs`) for turning on the metadata encryption above, instead of
+  requiring a hand-written `config.toml` edit. On a real terminal (not piped/CI), `witslog init`
+  now asks — in plain language, no jargon — whether you want to protect sensitive data, using
+  arrow keys/spacebar/enter to answer (`dialoguer`'s `MultiSelect`):
+  ```
+  Optional features (space to select, enter to continue)
+  > [ ] Protect sensitive info you log (like emails, tokens, or account numbers) — recommended if you're not sure
+  ```
+  Say yes and it generates a real AES-256-GCM key (no naming prompt — always the fixed
+  `WITSLOG_ENCRYPTION_KEY` var name, anyone wanting a different name can still hand-edit
+  `config.toml`'s `[crypto] key_env`), writes the variable **name** into
+  `.witslog/config.toml`'s `[crypto]` section and the **value** into `.witslog/.env`
+  (gitignored, 0600 on Unix) — fully automatic once confirmed, no manual `export`/copy-paste
+  step. `witslog config` (no argument) now offers the same choice via an arrow-key menu —
+  "Show current settings" / "Turn on / change encryption for sensitive data" / three new
+  toggle items (below) / "Exit" — and if encryption is already on, offers to generate a fresh
+  key (with a plain-language warning that old data stays locked unless the old key is kept).
+  - **Never automatic, never silent:** the wizard only appears on a real terminal, and only
+    when you haven't already told it what to do — `witslog init --encrypt` (optionally
+    `--encrypt=YOUR_VAR_NAME`) or `witslog init --yes` skip every prompt for scripts/CI, with
+    byte-identical behavior to before this change when piped or redirected. Ctrl+C at any point
+    cancels cleanly with nothing written.
+  - **The key value now lives in `.witslog/.env`, not stdout** — a deliberate change from the
+    original "print once, like `ssh-keygen`" design: `load_dotenv_if_present`
+    (`crates/witslog-cli/src/main.rs`) loads that file into the process env once at CLI
+    startup, before any subcommand runs and before crypto resolves its key, so the very next
+    `witslog log`/`get`/etc. already has it — closing the gap where a user who missed the
+    printed key, or whose scrollback got cleared, had no way to recover it. It never overrides
+    a var already set in the real shell environment. Still never written to `config.toml`
+    itself, and still gitignored the same as the rest of `.witslog/`.
+  - **`witslog config`'s menu also toggles `buffer.enabled`, `enrich.hostname`, and
+    `taxonomy.auto_classify_enabled`** — each item shows a one-line plain-language description
+    before asking on/off (`dialoguer::Confirm`), then writes `[section] key = bool` via the
+    same format-preserving `toml_edit` read-modify-write as the crypto flow. New shared helper:
+    `toggle_bool_setting`.
+  - Uses `.witslog/config.toml` written with `toml_edit` (format-preserving), so an existing
+    file's other sections/comments are left untouched when only one key changes.
+  - New dependencies: `dialoguer` (the interactive prompts), `toml_edit` (safe partial config
+    writes). Files: `crates/witslog-cli/src/main.rs`
+    (`run_init_encryption_prompt`, `run_config_menu`, `run_config_encryption_flow`,
+    `enable_metadata_encryption`, `write_env_file_var`, `load_dotenv_if_present`,
+    `toggle_bool_setting`, `generate_hex_key`).
 
 - **Metadata-field encryption is now wired end-to-end (FR-P9-004)** — previously
   `witslog_core::crypto::FieldCipher`/`EventBuilder::encrypt_metadata` existed but had no
