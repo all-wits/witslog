@@ -5,7 +5,7 @@ All notable changes to witslog are documented here. Format follows
 [Semantic Versioning](https://semver.org/). Each SDK/crate is versioned
 independently at pre-1.0 — this file tracks the project as a whole.
 
-## [Unreleased]
+## [0.1.7] — 2026-07-24
 
 ### Fixed
 
